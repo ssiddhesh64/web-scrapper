@@ -4,3 +4,13 @@ __pycache__/
 *.pyo
 *.pyd
 .DS_Store
+
+# SQLite databases
+*.db
+*.sqlite
+*.sqlite3
+
+# SQLite temporary files
+*.db-journal
+*.db-wal
+*.db-shm
