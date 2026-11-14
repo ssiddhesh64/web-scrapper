@@ -3,10 +3,8 @@ import asyncio
 import json
 import logging
 from pathlib import Path
-from datetime import datetime, timezone
 
 from camoufox.async_api import AsyncCamoufox
-
 
 logging.basicConfig(
     level=logging.INFO,

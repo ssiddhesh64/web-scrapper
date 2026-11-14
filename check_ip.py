@@ -1,15 +1,19 @@
+"""Print the public IP the scraper's browser uses (e.g. to check a proxy's exit IP).
+
+uv run python check_ip.py            # uses BrowserConfig.from_env(), so SCRAPER_PROXY_* applies
+"""
+
 import asyncio
-from camoufox.async_api import AsyncCamoufox
 
-async def main():
-    async with AsyncCamoufox(headless=True) as browser:
-        page = await browser.new_page()
+from web_scrapper import BrowserConfig, open_browser
 
+
+async def main() -> None:
+    async with open_browser(BrowserConfig.from_env(headless=True)) as context:
+        page = await context.new_page()
         await page.goto("https://api.ipify.org")
-        ip = await page.locator("body").inner_text()
+        print("Camoufox public IP:", await page.locator("body").inner_text())
 
-        print("Camoufox public IP:", ip)
 
-        await browser.close()
-
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
