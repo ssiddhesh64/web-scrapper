@@ -6,13 +6,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Experimental web scraper (target: Reddit and similar bot-protected sites). Three approaches coexist as top-level scripts:
 
-- **Camoufox (current direction)**: `diagnose.py`, `test_bot.py`, `check_ip.py`. Stealth Firefox via `camoufox.async_api.AsyncCamoufox` plus `browserforge` fingerprints (`Screen`, `os="macos"`). New scraping work goes here.
+- **Camoufox (current direction)**: `diagnose.py`, `test_bot.py`, `check_ip.py`. Stealth Firefox via `camoufox.async_api.AsyncCamoufox` (`os="macos"`, with `Screen` from `camoufox.fingerprints`). New scraping work goes here.
 - **Selenium (legacy)**: `crawler.py` is a same-domain crawler using headless Chrome that writes to `scrape.db` (SQLite `pages` table). `db.py` dumps that table. Don't extend it; port useful parts to Camoufox.
 - **reddrix**: `test_reddit_json.py` uses the `reddrix` library for Reddit JSON (subreddit posts and comments).
 
-`src/web_scrapper/` is the package: `config.py` (`BrowserConfig`, `ProxyConfig`, `from_env()`), `browser.py` (`open_browser(cfg)`, the only module that imports camoufox) and `lab/` (Scraper Lab UI). The step-by-step roadmap is in `docs/PLAN.md` and the Camoufox API cheat sheet in `docs/camoufox_reference.md`.
+`src/web_scrapper/` is the package: `config.py` (`BrowserConfig`, `ProxyConfig`, `from_env()`), `browser.py` (`open_browser(cfg)`, the only module that imports camoufox), `fetcher.py` (`fetch(page, url, FetchOptions)` → `FetchResult`: block classification via `BlockKind`, retries with backoff for 429/5xx/network errors only, failure artifacts in `diagnostics/failures/`), `human.py` (`browse()`, log-normal pauses), `throttle.py` (`Throttle`: per-site gaps, breaks, budget, cool-downs, circuit breaker; raises `ThrottleStop`), `session.py` (`open_session()` / `ScrapeSession.visit()` = throttle → fetch → record → browse; this is the normal entry point for scraping) and `lab/` (Scraper Lab UI). Full architecture, defaults and the decision log are in `docs/ARCHITECTURE.md` (keep it updated when design decisions change). The step-by-step roadmap is in `docs/PLAN.md` and the Camoufox API cheat sheet in `docs/camoufox_reference.md`.
 
-**Scraper Lab**: run `uv run scraper-lab` and open http://127.0.0.1:8765. It's a local FastAPI + single-HTML UI for running experiments. The browser-config form is generated from the `BrowserConfig` dataclass (`lab/schema.py`), so new config fields appear automatically. Every run is saved to `output/runs/<id>/`. The server auto-reloads on changes under `src/`. Presets live in `lab/server.py`.
+**Scraper Lab**: run `uv run scraper-lab` and open http://127.0.0.1:8765. It's a local FastAPI + single-HTML UI for running experiments. The form cards are generated from the `BrowserConfig` / `HumanConfig` / `ThrottleConfig` dataclasses (`lab/schema.py` `SECTIONS`), so new config fields appear automatically. Several URLs in one run share one `ScrapeSession`. Every run is saved to `output/runs/<id>/`. The server auto-reloads on changes under `src/`. Presets live in `lab/server.py`.
 
 ## Environment & dependencies
 
@@ -23,7 +23,8 @@ Experimental web scraper (target: Reddit and similar bot-protected sites). Three
 
 ## Gotchas
 
-- `test_*.py` are **not pytest tests yet**. They're scripts that launch real browsers or hit Reddit. `test_bot.py` is now guarded by `if __name__ == "__main__"`, but `check_ip.py` still runs at import time. The plan is to convert them into real pytest tests: put the runtime work behind `if __name__ == "__main__"` and mock network/browser calls in unit tests.
+- Real pytest tests live in `tests/` (`uv run pytest`; `testpaths` is set so the root scripts aren't collected). They use fakes, never a real browser.
+- The top-level `test_*.py` files are **not pytest tests**. They're scripts that launch real browsers or hit Reddit. `test_bot.py` is now guarded by `if __name__ == "__main__"`, but `check_ip.py` still runs at import time. The plan is to convert them into real pytest tests: put the runtime work behind `if __name__ == "__main__"` and mock network/browser calls in unit tests.
 - Scripts default to `headless=False` (a visible browser) on purpose. Headless mode is easier for sites to detect.
 - `diagnose.py` visits pixelscan.net, waits about 30s, and overwrites `diagnostics/report.json`, `page.html` and `browserscan.png`. Use those files to compare fingerprints across changes.
 - `*.db` files are gitignored, and there's no CI.

@@ -1,56 +1,39 @@
 import asyncio
+import logging
 from pathlib import Path
 
-from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+from web_scrapper import BrowserConfig, FetchOptions, ThrottleStop, open_session
 
-from web_scrapper import BrowserConfig, open_browser
-
-TARGET_URL = "https://www.siddheshsawant.in/experience"
 OUTPUT_DIR = Path("output")
+URLS = [
+    "https://www.siddheshsawant.in/",
+    "https://www.siddheshsawant.in/#experience",
+]
 
 
-async def main(
-    url: str = TARGET_URL,
-    cfg: BrowserConfig | None = None,
-    wait_selector: str | None = None,
-):
-    cfg = cfg or BrowserConfig.from_env()
+async def main(urls=URLS, cfg: BrowserConfig | None = None, opts: FetchOptions | None = None):
+    # One session = one browser, one tab, one throttle. Human browsing after each OK page.
+    async with open_session(cfg, fetch_opts=opts or FetchOptions()) as session:
+        for url in urls:
+            try:
+                visit = await session.visit(url)
+            except ThrottleStop as stop:
+                print("Throttle says stop:", stop)
+                break
 
-    async with open_browser(cfg) as context:
-        page = await context.new_page()
-
-        response = await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-        status = response.status if response else None
-        print(f"Status: {status}  Final URL: {page.url}")
-        if status is None or status >= 400:
-            print("Request failed or was blocked; stopping.")
-            return
-
-        # Wait for the page to be ready instead of sleeping a fixed time.
-        try:
-            if wait_selector:
-                await page.wait_for_selector(wait_selector, timeout=15_000)
-            else:
-                await page.wait_for_load_state("networkidle", timeout=15_000)
-        except PlaywrightTimeoutError:
-            print("Timed out waiting for the page to settle; continuing with what loaded.")
-
-        title = await page.title()
-        html = await page.content()
-        text = await page.locator("body").inner_text()
-
-        OUTPUT_DIR.mkdir(exist_ok=True)
-        html_path = OUTPUT_DIR / "page.html"
-        html_path.write_text(html, encoding="utf-8")
-
-        print("Title:", title)
-        print(f"HTML: {len(html):,} chars saved to {html_path}")
-        print("Text preview:\n", text[:500])
+            r = visit.result
+            print(f"\n{url}\n  status={r.status} block={r.block} attempts={r.attempts}")
+            print(f"  waited={visit.waited}s fetch={r.elapsed}s browse={visit.browse}")
+            if not r.ok:
+                print("  not OK:", r.signals or r.error, "| artifacts:", r.artifacts)
+                continue
+            OUTPUT_DIR.mkdir(exist_ok=True)
+            (OUTPUT_DIR / "page.html").write_text(r.html, encoding="utf-8")
+            print(f"  title={r.title!r} html={len(r.html):,} chars -> {OUTPUT_DIR / 'page.html'}")
 
 
 if __name__ == "__main__":
-    # asyncio.run(main())
-    # asyncio.run(main(url="https://old.reddit.com/r/python/"))
-    # Keep cookies between runs:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    asyncio.run(main())
+    # asyncio.run(main(["https://old.reddit.com/r/python/"]))   # -> login_wall
     # asyncio.run(main(cfg=BrowserConfig(profile_dir=Path("profiles/default"))))
-    asyncio.run(main(url="https://www.siddheshsawant.in/"))

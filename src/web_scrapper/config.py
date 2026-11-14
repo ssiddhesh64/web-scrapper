@@ -74,3 +74,49 @@ class BrowserConfig:
 
         values.update(overrides)
         return cls(**values)
+
+
+@dataclass(frozen=True)
+class HumanConfig:
+    """How we behave on a page after it loads (see human.py). Ranges are (min, max)."""
+
+    enabled: bool = True
+    read_seconds: tuple[float, float] = (2.0, 8.0)  # "reading" pause per page
+    scrolls: tuple[int, int] = (1, 4)  # mouse-wheel scrolls per page
+    scroll_px: tuple[int, int] = (300, 900)  # distance per scroll
+    scroll_pause: tuple[float, float] = (0.6, 2.5)  # pause after each scroll
+    scroll_back_chance: float = 0.15  # sometimes scroll up a little, like people do
+    mouse_moves: tuple[int, int] = (0, 2)  # idle cursor moves per page
+
+    def __post_init__(self):
+        for name in ("read_seconds", "scrolls", "scroll_px", "scroll_pause", "mouse_moves"):
+            lo, hi = getattr(self, name)
+            if lo < 0 or hi < lo:
+                raise ValueError(f"{name} must be (min, max) with 0 <= min <= max, got {(lo, hi)}")
+        if not 0 <= self.scroll_back_chance <= 1:
+            raise ValueError("scroll_back_chance must be between 0 and 1")
+
+
+@dataclass(frozen=True)
+class ThrottleConfig:
+    """When the next page load is allowed (see throttle.py). Times in seconds."""
+
+    min_interval: float = 4.0  # gap between page loads on the same site...
+    max_interval: float = 10.0  # ...drawn between these (log-normal, not uniform)
+    max_pages_per_session: int = 60  # then stop: start a fresh session later
+    break_every: tuple[int, int] = (15, 30)  # take a longer break every N pages...
+    break_seconds: tuple[float, float] = (30.0, 120.0)  # ...lasting this long
+    cooldown_base: float = 60.0  # after a 429/5xx: wait this, doubling per repeat...
+    cooldown_max: float = 900.0  # ...up to this
+    stop_on_hard_block: bool = True  # 403/captcha -> stop that site for this session
+    max_consecutive_failures: int = 3  # any non-OK outcomes in a row -> stop that site
+
+    def __post_init__(self):
+        if not 0 <= self.min_interval <= self.max_interval:
+            raise ValueError("need 0 <= min_interval <= max_interval")
+        if self.max_pages_per_session < 1 or self.max_consecutive_failures < 1:
+            raise ValueError("max_pages_per_session and max_consecutive_failures must be >= 1")
+        for name in ("break_every", "break_seconds"):
+            lo, hi = getattr(self, name)
+            if lo < 0 or hi < lo:
+                raise ValueError(f"{name} must be (min, max) with 0 <= min <= max")

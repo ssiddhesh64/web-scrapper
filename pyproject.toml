@@ -26,6 +26,7 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "pytest>=9.2.0",
     "ruff>=0.17.5",
 ]
 
@@ -35,3 +36,15 @@ target-version = "py314"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff.lint.flake8-bugbear]
+# Frozen dataclasses: safe to use as default argument values.
+extend-immutable-calls = [
+    "web_scrapper.config.BrowserConfig",
+    "web_scrapper.config.HumanConfig",
+    "web_scrapper.config.ThrottleConfig",
+    "web_scrapper.fetcher.FetchOptions",
+]

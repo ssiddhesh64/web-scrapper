@@ -190,12 +190,27 @@ td.mono { font-family: var(--mono); overflow-wrap: anywhere; }
           <label for="url">URL</label>
           <input id="url" type="url" placeholder="https://old.reddit.com/r/python/" spellcheck="false">
         </div>
+        <div class="field">
+          <label for="extra_urls">Then also visit <code class="name">same session</code></label>
+          <textarea id="extra_urls" rows="2" spellcheck="false" placeholder="one URL per line (optional)"></textarea>
+          <div class="help">Visited in order in the same tab, through the throttle. Results tabs show the last page; the Session tab shows every visit.</div>
+        </div>
       </div>
     </details>
 
     <details class="card" open>
       <summary>Browser config <span class="hint">config.py</span></summary>
       <div class="card-body" id="configFields"></div>
+    </details>
+
+    <details class="card">
+      <summary>Human behaviour <span class="hint">HumanConfig</span></summary>
+      <div class="card-body" id="humanFields"></div>
+    </details>
+
+    <details class="card">
+      <summary>Throttle <span class="hint">ThrottleConfig</span></summary>
+      <div class="card-body" id="throttleFields"></div>
     </details>
 
     <details class="card">
@@ -223,11 +238,11 @@ td.mono { font-family: var(--mono); overflow-wrap: anywhere; }
           <div class="field"><label for="timeout_ms">Timeout ms</label><input id="timeout_ms" type="number" min="1000" step="1000" value="30000"></div>
           <div class="field"><label for="settle_ms">Extra settle ms</label><input id="settle_ms" type="number" min="0" step="500" value="0"></div>
         </div>
-        <div class="field">
-          <label for="scrolls">Human scrolls</label>
-          <input id="scrolls" type="number" min="0" max="50" value="0">
-          <div class="help">Mouse-wheel scrolls with random distance and pauses (loads infinite feeds).</div>
+        <div class="row">
+          <div class="field"><label for="retries">Retries</label><input id="retries" type="number" min="0" max="5" value="1"></div>
+          <div class="field"><label for="backoff_base">Backoff base s</label><input id="backoff_base" type="number" min="0" step="1" value="5"></div>
         </div>
+        <div class="help" style="font-size:11.5px;color:var(--muted);margin-top:-4px">Only 429 / 5xx / network errors are retried (backoff doubles, with jitter; honours Retry-After). 403, captcha and login walls are never retried.</div>
         <label class="check"><input type="checkbox" id="screenshot" checked> Take screenshot</label>
         <label class="check"><input type="checkbox" id="full_page"> Full-page screenshot</label>
       </div>
@@ -274,7 +289,8 @@ td.mono { font-family: var(--mono); overflow-wrap: anywhere; }
 <script>
 const $ = (s, el = document) => el.querySelector(s);
 const STORE_KEY = "scraperLab.form.v1";
-let SCHEMA = [], PRESETS = [], PROFILES = [];
+let SECTIONS = {}, PRESETS = [], PROFILES = [];
+const SECTION_ROOT = { config: "#configFields", human: "#humanFields", throttle: "#throttleFields" };
 let current = null, activeTab = "overview", running = false, timer = null;
 
 function h(tag, attrs = {}, ...children) {
@@ -307,13 +323,13 @@ const store = {
   set(v) { try { localStorage.setItem(STORE_KEY, JSON.stringify(v)); } catch {} },
 };
 
-/* ---------- Browser config form, generated from the BrowserConfig schema ---------- */
+/* ---------- Config forms, generated from the dataclasses in config.py ---------- */
 function optLabel(v) { return v === null ? "auto" : String(v); }
 
-function renderConfig() {
-  const root = $("#configFields"); root.replaceChildren();
-  for (const f of SCHEMA) {
-    const id = `cfg-${f.name}`;
+function renderConfig(key) {
+  const root = $(SECTION_ROOT[key]); root.replaceChildren();
+  for (const f of SECTIONS[key]) {
+    const id = `${key}-${f.name}`;
     let control;
     switch (f.kind) {
       case "bool":
@@ -326,11 +342,11 @@ function renderConfig() {
         control = h("input", { id, placeholder: "true | false | seconds", spellcheck: "false" });
         break;
       case "number":
-        control = h("input", { id, type: "number" });
+        control = h("input", { id, type: "number", step: "any" });
         break;
       case "ints":
         control = h("div", { class: "row" },
-          Array.from({ length: f.length }, (_, i) => h("input", { id: `${id}-${i}`, type: "number" })));
+          Array.from({ length: f.length }, (_, i) => h("input", { id: `${id}-${i}`, type: "number", step: "any" })));
         break;
       case "group":
         control = h("div", { class: "group" }, f.fields.map(sf =>
@@ -349,13 +365,13 @@ function renderConfig() {
       control,
       f.help ? h("div", { class: "help" }, f.help) : null));
   }
-  root.append(h("datalist", { id: "profilesList" }, PROFILES.map(p => h("option", { value: p }))));
+  if (key === "config") root.append(h("datalist", { id: "profilesList" }, PROFILES.map(p => h("option", { value: p }))));
 }
 
-function getConfig() {
+function getConfig(key = "config") {
   const cfg = {};
-  for (const f of SCHEMA) {
-    const id = `cfg-${f.name}`;
+  for (const f of SECTIONS[key]) {
+    const id = `${key}-${f.name}`;
     switch (f.kind) {
       case "bool": cfg[f.name] = $(`#${id}`).checked; break;
       case "choice": cfg[f.name] = JSON.parse($(`#${id}`).value); break;
@@ -383,9 +399,9 @@ function getConfig() {
   return cfg;
 }
 
-function setConfig(cfg = {}) {
-  for (const f of SCHEMA) {
-    const id = `cfg-${f.name}`;
+function setConfig(key, cfg = {}) {
+  for (const f of SECTIONS[key]) {
+    const id = `${key}-${f.name}`;
     const v = f.name in cfg ? cfg[f.name] : f.default;
     switch (f.kind) {
       case "bool": $(`#${id}`).checked = !!v; break;
@@ -423,16 +439,18 @@ function getRules() {
 function setRules(rules = []) { $("#rules").replaceChildren(); rules.forEach(addRule); if (!rules.length) addRule(); }
 
 /* ---------- Whole form state ---------- */
-const SIMPLE = ["url", "wait_until", "wait_for", "wait_selector", "timeout_ms", "settle_ms", "scrolls", "js"];
+const SIMPLE = ["url", "wait_until", "wait_for", "wait_selector", "timeout_ms", "settle_ms", "retries", "backoff_base", "js"];
 const DEFAULTS = { url: "", wait_until: "domcontentloaded", wait_for: "networkidle", wait_selector: "",
-  timeout_ms: 30000, settle_ms: 0, scrolls: 0, screenshot: true, full_page: false, extract: [], js: "" };
+  timeout_ms: 30000, settle_ms: 0, retries: 1, backoff_base: 5, screenshot: true, full_page: false, extract: [], extra_urls: [], js: "" };
 
 function getState() {
   const s = {};
   for (const k of SIMPLE) s[k] = $(`#${k}`).value;
-  for (const k of ["timeout_ms", "settle_ms", "scrolls"]) s[k] = Number(s[k]) || 0;
+  for (const k of ["timeout_ms", "settle_ms", "retries", "backoff_base"]) s[k] = Number(s[k]) || 0;
   s.screenshot = $("#screenshot").checked; s.full_page = $("#full_page").checked;
-  s.extract = getRules(); s.config = getConfig();
+  s.extract = getRules();
+  s.extra_urls = $("#extra_urls").value.split("\n").map(u => u.trim()).filter(Boolean);
+  for (const key of Object.keys(SECTIONS)) s[key] = getConfig(key);
   return s;
 }
 function setState(s = {}, { keepConfig = false } = {}) {
@@ -440,7 +458,8 @@ function setState(s = {}, { keepConfig = false } = {}) {
   for (const k of SIMPLE) $(`#${k}`).value = v[k] ?? "";
   $("#screenshot").checked = !!v.screenshot; $("#full_page").checked = !!v.full_page;
   setRules(v.extract);
-  if (!keepConfig) setConfig(s.config || {});
+  $("#extra_urls").value = (v.extra_urls || []).join("\n");
+  if (!keepConfig) for (const key of Object.keys(SECTIONS)) setConfig(key, s[key] || {});
   syncWaitSelector(); save();
 }
 function save() { try { store.set(getState()); } catch {} }
@@ -473,7 +492,7 @@ async function run() {
 }
 async function preview() {
   try {
-    const data = await api("/api/preview", { method: "POST", body: JSON.stringify({ config: getConfig() }) });
+    const data = await api("/api/preview", { method: "POST", body: JSON.stringify({ config: getConfig("config") }) });
     current = current || { result: { id: null, url: "(preview only, not launched)", timings: {} }, request: {} };
     current.preview = data.launch_kwargs; activeTab = "launch"; renderResult();
   } catch (e) { toast(e.message); }
@@ -488,18 +507,19 @@ function statusPill(r) {
 }
 function verdictPill(r) {
   if (r.error) return null;
-  if (r.block_signals?.length) return h("span", { class: "pill warn" }, `⚠ ${r.block_signals.length} block signal${r.block_signals.length > 1 ? "s" : ""}`);
+  if (r.block_signals?.length) return h("span", { class: "pill warn" }, `⚠ ${r.block && r.block !== "none" ? r.block.replace("_", " ") : "blocked"}`);
   if (r.ok) return h("span", { class: "pill ok" }, "✓ Looks clean");
   return null;
 }
 
 const TABS = [
-  ["overview", "Overview"], ["screenshot", "Screenshot"], ["extract", "Extract"], ["text", "Text"],
+  ["overview", "Overview"], ["session", "Session"], ["screenshot", "Screenshot"], ["extract", "Extract"], ["text", "Text"],
   ["html", "HTML"], ["network", "Network"], ["console", "Console"], ["cookies", "Cookies"],
   ["launch", "Launch config"], ["js", "JS"], ["raw", "Raw JSON"],
 ];
 function tabCount(key, r) {
   switch (key) {
+    case "session": return r.visits?.length || null;
     case "extract": return r.extract?.length ? r.extract.reduce((a, e) => a + (e.count || 0), 0) : null;
     case "network": return r.network?.length || null;
     case "console": return r.console?.length || null;
@@ -544,12 +564,13 @@ const RENDER = {
   overview(p, r) {
     const signals = h("div", { class: "box" }, h("h3", {}, "Bot-detection signals"));
     if (r.error) signals.append(h("div", { class: "signal bad" }, r.error));
-    (r.block_signals || []).forEach(s => signals.append(h("div", { class: "signal bad" }, s)));
+    (r.block_signals || []).filter(s => s !== r.error).forEach(s => signals.append(h("div", { class: "signal bad" }, s)));
     (r.warnings || []).forEach(s => signals.append(h("div", { class: "signal warn" }, s)));
-    if (!r.error && !r.block_signals?.length) signals.append(h("div", { class: "signal ok" }, "No block signals detected (heuristic: status codes, captcha/block phrases, login redirects)."));
+    if (!r.error && !r.block_signals?.length) signals.append(h("div", { class: "signal ok" }, "No block signals detected (fetcher.classify: status codes, login redirects, block phrases in the title or on short pages)."));
 
     const page = h("div", { class: "box" }, h("h3", {}, "Page"), kv({
-      "Final URL": r.final_url, "Title": r.title, "Browser": r.browser_version,
+      "Final URL": r.final_url, "Title": r.title,
+      "Block type": r.block && r.block !== "none" ? r.block : null, "Attempts": r.attempts, "Browser": r.browser_version,
       "HTML": r.html_chars != null ? `${r.html_chars.toLocaleString()} chars` : null,
       "Text": r.text_chars != null ? `${r.text_chars.toLocaleString()} chars` : null,
       "Responses": r.network_summary?.responses, "HTTP ≥400": r.network_summary?.errors,
@@ -558,7 +579,7 @@ const RENDER = {
 
     const t = r.timings || {}, total = t.total || 1;
     const timing = h("div", { class: "box" }, h("h3", {}, "Timings"),
-      h("div", { class: "bars" }, [["launched", "Launch"], ["loaded", "goto"], ["ready", "Wait/scroll"], ["extracted", "Extract"], ["end", "Shot+close"]]
+      h("div", { class: "bars" }, [["launched", "Launch"], ["loaded", "Visits"], ["extracted", "Extract"], ["end", "Shot+close"]]
         .filter(([k]) => t[k] != null)
         .map(([k, label]) => h("div", { class: "bar-row" }, h("span", {}, label),
           h("div", { class: "track" }, h("div", { class: "fill", style: `width:${Math.max(2, (t[k] / total) * 100)}%` })),
@@ -570,6 +591,25 @@ const RENDER = {
 
     p.append(h("div", { class: "grid" }, signals, page, timing, idBox));
     if (r.traceback) p.append(h("h3", { style: "margin:16px 0 8px" }, "Traceback"), h("pre", { class: "block" }, r.traceback));
+  },
+  session(p, r) {
+    const visits = r.visits || [];
+    if (!visits.length) { p.append(h("div", { class: "empty" }, "No session data for this run (older run format).")); return; }
+    const pill = v => v.skipped ? h("span", { class: "pill muted" }, "skipped")
+      : h("span", { class: `pill ${v.block !== "none" ? "warn" : v.status < 400 ? "ok" : "bad"}` },
+          v.block !== "none" ? v.block.replace("_", " ") : `HTTP ${v.status}`);
+    const fmt = n => n == null ? "" : `${n}s`;
+    p.append(
+      h("p", { class: "help", style: "color:var(--muted);margin:0 0 10px" },
+        "Waited = time the throttle held us back before loading. Browse = what human.browse() did after an OK load."),
+      h("table", {}, h("thead", {}, h("tr", {}, ["#", "URL", "Result", "Waited", "Fetch", "Attempts", "Browse"].map(c => h("th", {}, c)))),
+        h("tbody", {}, visits.map((v, i) => h("tr", {},
+          h("td", {}, i + 1), h("td", { class: "mono" }, v.url, v.skipped ? h("div", { class: "help", style: "color:var(--warn)" }, v.skipped) : null),
+          h("td", {}, pill(v)), h("td", {}, fmt(v.waited)), h("td", {}, fmt(v.fetch_seconds)), h("td", {}, v.attempts ?? ""),
+          h("td", {}, v.browse && Object.keys(v.browse).length
+            ? `${v.browse.scrolls} scrolls · ${v.browse.mouse_moves} moves · read ${v.browse.read_seconds}s` : "—"))))));
+    if (r.throttle_log?.length) p.append(h("h3", { style: "margin:18px 0 8px;font-size:13px" }, "Throttle decisions"),
+      h("pre", { class: "block" }, r.throttle_log.join("\n")));
   },
   screenshot(p, r) {
     if (!r.screenshot || !r.id) { p.append(h("div", { class: "empty" }, "No screenshot for this run.")); return; }
@@ -710,8 +750,8 @@ async function delRun(id) {
 /* ---------- Init ---------- */
 async function init() {
   const data = await api("/api/schema");
-  SCHEMA = data.fields; PRESETS = data.presets; PROFILES = data.profiles;
-  renderConfig();
+  SECTIONS = data.sections; PRESETS = data.presets; PROFILES = data.profiles;
+  for (const key of Object.keys(SECTIONS)) renderConfig(key);
   PRESETS.forEach((p, i) => $("#preset").append(h("option", { value: i }, p.name)));
   const saved = store.get();
   setState(saved || { ...DEFAULTS, ...PRESETS[0] });

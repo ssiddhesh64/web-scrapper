@@ -1,4 +1,5 @@
-"""Turn BrowserConfig into a form description, and form values back into a BrowserConfig.
+"""Turn config dataclasses (BrowserConfig, HumanConfig, ThrottleConfig) into form descriptions,
+and form values back into config objects.
 
 The UI form is generated from the dataclass, so adding a field to `config.py` makes it show up
 in the Lab automatically. For a tooltip, either add an entry to HELP below or declare the field
@@ -10,7 +11,7 @@ from dataclasses import MISSING, asdict, fields, is_dataclass
 from pathlib import Path
 from typing import Any, Literal, Union, get_args, get_origin, get_type_hints
 
-from ..config import BrowserConfig
+from ..config import BrowserConfig, HumanConfig, ThrottleConfig
 
 HELP = {
     "os": "OS the fingerprint claims. Matching your real OS is the most consistent choice.",
@@ -22,6 +23,24 @@ HELP = {
     "block_images": "Skip image downloads. Saves bandwidth/proxy traffic.",
     "profile_dir": "e.g. profiles/reddit1 — keeps cookies between runs. Empty = fresh browser.",
     "extra": 'Raw Camoufox kwargs as JSON, e.g. {"disable_coop": true}.',
+    # HumanConfig
+    "enabled": "Act like a person after each successful load: glance, scroll, read.",
+    "read_seconds": "Reading pause per page (min, max), log-normal.",
+    "scrolls": "Mouse-wheel scrolls per page (min, max).",
+    "scroll_px": "Pixels per scroll (min, max).",
+    "scroll_pause": "Pause after each scroll, seconds (min, max).",
+    "scroll_back_chance": "Probability (0-1) that a scroll goes a little back up.",
+    "mouse_moves": "Idle cursor moves per page (min, max).",
+    # ThrottleConfig
+    "min_interval": "Min seconds between page loads on the same site.",
+    "max_interval": "Max seconds between page loads on the same site.",
+    "max_pages_per_session": "Stop the session after this many pages.",
+    "break_every": "Take a longer break every N pages (min, max).",
+    "break_seconds": "Length of that break, seconds (min, max). (0, 0) disables breaks.",
+    "cooldown_base": "Cool-down after a 429/5xx; doubles on each repeat.",
+    "cooldown_max": "Cap for the cool-down.",
+    "stop_on_hard_block": "On 403/captcha, stop that site for the rest of the session.",
+    "max_consecutive_failures": "Non-OK results in a row before a site is stopped.",
 }
 
 
@@ -74,10 +93,13 @@ def _jsonable(value):
     return value
 
 
-def config_schema() -> list[dict[str, Any]]:
-    hints = get_type_hints(BrowserConfig)
+SECTIONS = {"config": BrowserConfig, "human": HumanConfig, "throttle": ThrottleConfig}
+
+
+def config_schema(cls=BrowserConfig) -> list[dict[str, Any]]:
+    hints = get_type_hints(cls)
     out = []
-    for f in fields(BrowserConfig):
+    for f in fields(cls):
         if f.default is not MISSING:
             default = f.default
         elif f.default_factory is not MISSING:
@@ -117,13 +139,20 @@ def _coerce(tp, value):
     return value
 
 
-def config_from_dict(data: dict[str, Any]) -> BrowserConfig:
-    """Form values -> BrowserConfig. An empty proxy falls back to SCRAPER_PROXY_* env vars."""
-    hints = get_type_hints(BrowserConfig)
+def all_schemas() -> dict[str, list[dict[str, Any]]]:
+    return {key: config_schema(cls) for key, cls in SECTIONS.items()}
+
+
+def config_from_dict(data: dict[str, Any], cls=BrowserConfig):
+    """Form values -> config object. For BrowserConfig an empty proxy falls back to the
+    SCRAPER_PROXY_* env vars."""
+    hints = get_type_hints(cls)
     values = {}
-    for f in fields(BrowserConfig):
+    for f in fields(cls):
         if f.name in data:
             values[f.name] = _coerce(hints[f.name], data[f.name])
+    if cls is not BrowserConfig:
+        return cls(**values)
     if values.get("proxy", "unset") is None:
         values.pop("proxy")
     return BrowserConfig.from_env(**values)

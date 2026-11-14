@@ -13,6 +13,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 
 from ..browser import build_launch_kwargs
+from ..config import HumanConfig, ThrottleConfig
 from .runner import (
     PROJECT_ROOT,
     RUNS_DIR,
@@ -24,7 +25,7 @@ from .runner import (
     load_run,
     run_experiment,
 )
-from .schema import config_from_dict, config_schema
+from .schema import all_schemas, config_from_dict
 
 STATIC_DIR = Path(__file__).parent / "static"
 PROFILES_DIR = PROJECT_ROOT / "profiles"
@@ -52,7 +53,6 @@ PRESETS: list[dict[str, Any]] = [
         "url": "https://www.reddit.com/r/python/",
         "wait_for": "selector",
         "wait_selector": "shreddit-post",
-        "scrolls": 2,
         "extract": [
             {"name": "titles", "selector": "shreddit-post", "attr": "post-title"},
             {"name": "permalinks", "selector": "shreddit-post", "attr": "permalink"},
@@ -65,6 +65,15 @@ PRESETS: list[dict[str, Any]] = [
         "wait_for": "none",
         "js": "(async () => { const r = await fetch(location.href); const j = await r.json();"
         " return j.data.children.slice(0, 10).map(c => c.data.title) })()",
+    },
+    {
+        "name": "Session demo: 3 pages of my site (watch the throttle)",
+        "url": "https://www.siddheshsawant.in/",
+        "extra_urls": [
+            "https://www.siddheshsawant.in/#experience",
+            "https://www.siddheshsawant.in/#projects",
+        ],
+        "extract": [{"name": "headings", "selector": "h1, h2", "attr": ""}],
     },
     {
         "name": "Fingerprint: browserscan",
@@ -105,8 +114,14 @@ def _parse_run_request(body: dict[str, Any]) -> RunRequest:
         raise HTTPException(400, "URL must start with http:// or https://")
     try:
         cfg = config_from_dict(body.get("config") or {})
+        human = config_from_dict(body.get("human") or {}, HumanConfig)
+        throttle = config_from_dict(body.get("throttle") or {}, ThrottleConfig)
     except (TypeError, ValueError) as e:
-        raise HTTPException(400, f"Invalid browser config: {e}") from e
+        raise HTTPException(400, f"Invalid config: {e}") from e
+    extra_urls = [u.strip() for u in body.get("extra_urls") or [] if str(u).strip()]
+    for u in extra_urls:
+        if not re.match(r"^https?://", u):
+            raise HTTPException(400, f"Extra URL must start with http(s)://: {u}")
     rules = [
         ExtractRule(
             name=str(r.get("name") or r.get("selector")),
@@ -124,7 +139,11 @@ def _parse_run_request(body: dict[str, Any]) -> RunRequest:
         wait_selector=str(body.get("wait_selector") or ""),
         timeout_ms=int(body.get("timeout_ms") or 30_000),
         settle_ms=int(body.get("settle_ms") or 0),
-        scrolls=int(body.get("scrolls") or 0),
+        retries=max(0, min(5, int(body.get("retries") or 0))),
+        backoff_base=max(0.0, float(body.get("backoff_base") or 0)),
+        human=human,
+        throttle=throttle,
+        extra_urls=extra_urls[:20],
         screenshot=bool(body.get("screenshot", True)),
         full_page=bool(body.get("full_page", False)),
         extract=rules,
@@ -144,7 +163,7 @@ async def schema():
         if PROFILES_DIR.exists()
         else []
     )
-    return {"fields": config_schema(), "presets": PRESETS, "profiles": profiles}
+    return {"sections": all_schemas(), "presets": PRESETS, "profiles": profiles}
 
 
 @app.post("/api/preview")

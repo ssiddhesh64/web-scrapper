@@ -22,4 +22,6 @@ output/
 profiles/
 
 # docs
-docs/
+
+# Fetcher failure artifacts
+diagnostics/failures/

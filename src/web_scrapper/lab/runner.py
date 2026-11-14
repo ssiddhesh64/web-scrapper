@@ -3,11 +3,16 @@
 Each run is saved to output/runs/<id>/ (request.json, result.json, page.html, screenshot.png),
 so you can compare runs after changing code or config.
 
-The block detection here is a first draft; Step 3 moves it into `fetcher.py`.
+Loading + block detection + retries go through the real `fetcher.fetch()`, so improving the
+fetcher improves the Lab automatically. Visits go through `ScrapeSession`, so the throttle and
+human behaviour are the real ones too. The Lab only adds extras on top (extraction, JS,
+identity probe, network/console capture).
+
+Several URLs in one run = one session: they share a tab, cookies and the throttle, so you can
+watch gaps, breaks, cool-downs and the circuit breaker at work.
 """
 
 import json
-import random
 import shutil
 import time
 import traceback
@@ -16,10 +21,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from playwright.async_api import TimeoutError as PlaywrightTimeoutError
-
 from ..browser import build_launch_kwargs, open_browser
-from ..config import BrowserConfig
+from ..config import BrowserConfig, HumanConfig, ThrottleConfig
+from ..fetcher import FetchOptions
+from ..session import ScrapeSession
+from ..throttle import ThrottleStop
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 RUNS_DIR = PROJECT_ROOT / "output" / "runs"
@@ -27,21 +33,6 @@ RUNS_DIR = PROJECT_ROOT / "output" / "runs"
 TEXT_LIMIT = 50_000
 EXTRACT_LIMIT = 200
 NETWORK_LIMIT = 1_500
-
-BLOCK_PHRASES = [
-    "verify you are human",
-    "are you a robot",
-    "captcha",
-    "unusual traffic",
-    "too many requests",
-    "you've been blocked",
-    "you have been blocked",
-    "request has been blocked",
-    "access denied",
-    "just a moment...",
-    "whoa there, pardner",  # Reddit's block page
-    "prove your humanity",
-]
 
 IDENTITY_JS = """() => ({
   userAgent: navigator.userAgent,
@@ -78,7 +69,11 @@ class RunRequest:
     wait_selector: str = ""
     timeout_ms: int = 30_000
     settle_ms: int = 0
-    scrolls: int = 0
+    retries: int = 1
+    backoff_base: float = 5.0
+    human: HumanConfig = field(default_factory=HumanConfig)
+    throttle: ThrottleConfig = field(default_factory=ThrottleConfig)
+    extra_urls: list[str] = field(default_factory=list)  # more pages in the same session
     screenshot: bool = True
     full_page: bool = False
     extract: list[ExtractRule] = field(default_factory=list)
@@ -102,23 +97,6 @@ def describe_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
     for k, v in kwargs.items():
         safe[k] = v if isinstance(v, (str, int, float, bool, type(None), dict, list)) else repr(v)
     return mask_secrets(safe)
-
-
-def detect_block_signals(status: int | None, final_url: str, title: str, text: str) -> list[str]:
-    signals = []
-    if status in (401, 403):
-        signals.append(f"HTTP {status}: access denied")
-    elif status == 429:
-        signals.append("HTTP 429: rate limited — back off before retrying")
-    elif status and status >= 500:
-        signals.append(f"HTTP {status}: server error (sometimes used as a soft block)")
-    haystack = f"{title}\n{text[:8000]}".lower()
-    for phrase in BLOCK_PHRASES:
-        if phrase in haystack:
-            signals.append(f'Page contains "{phrase}"')
-    if "/login" in final_url or "/account/login" in final_url:
-        signals.append("Redirected to a login page")
-    return signals
 
 
 def new_run_id() -> str:
@@ -186,29 +164,74 @@ async def run_experiment(req: RunRequest, raw_request: dict[str, Any]) -> dict[s
                 ),
             )
 
-            response = await page.goto(req.url, wait_until=req.wait_until, timeout=req.timeout_ms)
+            opts = FetchOptions(
+                wait_until=req.wait_until,
+                wait_for=req.wait_for,
+                wait_selector=req.wait_selector,
+                timeout_ms=req.timeout_ms,
+                settle_ms=req.settle_ms,
+                retries=req.retries,
+                backoff_base=req.backoff_base,
+                failure_dir=None,  # the Lab already saves everything into the run folder
+            )
+            session = ScrapeSession(
+                context, fetch_opts=opts, human_cfg=req.human, throttle=req.throttle
+            )
+            session.page = page  # reuse the tab we attached listeners to
+
+            visits = []
+            for url in [req.url, *req.extra_urls]:
+                try:
+                    v = await session.visit(url)
+                except ThrottleStop as stop:
+                    result["warnings"].append(f"Throttle stopped the session before {url}: {stop}")
+                    visits.append({"url": url, "skipped": str(stop)})
+                    break
+                visits.append(
+                    {
+                        "url": url,
+                        "started_at": v.started_at,
+                        "waited": v.waited,
+                        "status": v.result.status,
+                        "block": v.result.block.value,
+                        "attempts": v.result.attempts,
+                        "fetch_seconds": v.result.elapsed,
+                        "browse": v.browse,
+                        "title": v.result.title,
+                    }
+                )
+            result["visits"] = visits
+            result["throttle_log"] = session.throttle.log
             mark("loaded")
-            result["status"] = response.status if response else None
-            result["response_headers"] = dict(response.headers) if response else {}
 
-            try:
-                if req.wait_for == "selector" and req.wait_selector:
-                    await page.wait_for_selector(req.wait_selector, timeout=req.timeout_ms)
-                elif req.wait_for == "networkidle":
-                    await page.wait_for_load_state("networkidle", timeout=req.timeout_ms)
-            except PlaywrightTimeoutError:
-                result["warnings"].append(f"Timed out waiting for {req.wait_for}; used what loaded")
-            if req.settle_ms:
-                await page.wait_for_timeout(req.settle_ms)
-            for _ in range(req.scrolls):
-                await page.mouse.wheel(0, random.randint(500, 1100))
-                await page.wait_for_timeout(random.randint(700, 1800))
-            mark("ready")
+            # Everything below describes the LAST page loaded (the one the tab is on now).
+            last = session.visits[-1].result if session.visits else None
+            if last is None:
+                raise RuntimeError("No page was loaded")
+            result.update(
+                url=last.url,
+                status=last.status,
+                response_headers=last.headers,
+                final_url=last.final_url or page.url,
+                title=last.title,
+                block=last.block.value,
+                block_signals=last.signals,
+                attempts=last.attempts,
+            )
+            result["warnings"] += last.warnings
+            if last.error:
+                result["error"] = last.error
+            if any(v.result.blocked for v in session.visits[:-1]):
+                result["warnings"].append(
+                    "An earlier page in this session was blocked; see Session tab"
+                )
 
-            result["final_url"] = page.url
-            result["title"] = await page.title()
-            html = await page.content()
-            text = await page.locator("body").inner_text()
+            # Re-read: human browsing (scrolling) may have loaded more content.
+            if last.error:
+                html, text = last.html, last.text
+            else:
+                html = await page.content()
+                text = await page.locator("body").inner_text()
             (run_dir / "page.html").write_text(html, encoding="utf-8")
             result["html_chars"] = len(html)
             result["text_chars"] = len(text)
@@ -246,17 +269,14 @@ async def run_experiment(req: RunRequest, raw_request: dict[str, Any]) -> dict[s
                 {k: c.get(k) for k in ("name", "domain", "path", "expires", "httpOnly", "secure")}
                 for c in await context.cookies()
             ]
-            result["block_signals"] = detect_block_signals(
-                result["status"], page.url, result["title"], text
-            )
-            result["ok"] = bool(result["status"] and result["status"] < 400)
+            result["ok"] = last.ok
     except Exception as e:  # noqa: BLE001 - surface every failure in the UI
         result["error"] = f"{type(e).__name__}: {str(e).splitlines()[0] if str(e) else ''}"
         result["traceback"] = traceback.format_exc()
     finally:
         mark("end")
         start = marks["start"]
-        order = ["launched", "loaded", "ready", "extracted", "end"]
+        order = ["launched", "loaded", "extracted", "end"]
         prev = start
         for name in order:
             if name in marks:
