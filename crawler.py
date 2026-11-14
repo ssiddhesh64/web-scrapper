@@ -1,9 +1,9 @@
-import sqlite3, time
+import sqlite3
+import time
+from urllib.parse import urldefrag, urlparse
 
-from urllib.parse import urlparse, urldefrag
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.by import By
 
 MAX_PAGES = 5

@@ -25,3 +25,6 @@ profiles/
 
 # Fetcher failure artifacts
 diagnostics/failures/
+
+# Scraped data (SQLite db + JSONL files)
+data/

@@ -26,7 +26,7 @@ from . import human
 from .browser import open_browser
 from .config import BrowserConfig, HumanConfig, ThrottleConfig
 from .fetcher import FetchOptions, FetchResult, fetch
-from .throttle import Throttle
+from .throttle import BudgetStore, Throttle
 
 
 @dataclass
@@ -48,14 +48,17 @@ class ScrapeSession:
         throttle: Throttle | ThrottleConfig = ThrottleConfig(),
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         rng: random.Random = random,
+        budget_store: BudgetStore | None = None,
     ):
         self.context = context
         self.fetch_opts = fetch_opts
         self.human_cfg = human_cfg
         self.throttle = (
-            throttle if isinstance(throttle, Throttle) else Throttle(throttle, sleep=sleep)
+            throttle
+            if isinstance(throttle, Throttle)
+            else Throttle(throttle, sleep=sleep, budget_store=budget_store)
         )
-        self._sleep, self._rng = sleep, rng
+        self.sleep, self.rng = sleep, rng  # injectable: tests pass fakes
         self.page: Page | None = None
         self.visits: list[Visit] = []
 
@@ -72,11 +75,11 @@ class ScrapeSession:
         page = await self.get_page()
         started = datetime.now().isoformat(timespec="seconds")
         waited = await self.throttle.wait(url)
-        result = await fetch(page, url, self.fetch_opts, sleep=self._sleep)
+        result = await fetch(page, url, self.fetch_opts, sleep=self.sleep)
         self.throttle.record(url, result.block)
         did = {}
         if browse and result.ok:
-            did = await human.browse(page, self.human_cfg, rng=self._rng, sleep=self._sleep)
+            did = await human.browse(page, self.human_cfg, rng=self.rng, sleep=self.sleep)
         v = Visit(url=url, result=result, waited=round(waited, 2), browse=did, started_at=started)
         self.visits.append(v)
         return v
@@ -89,7 +92,16 @@ async def open_session(
     fetch_opts: FetchOptions = FetchOptions(),
     human_cfg: HumanConfig = HumanConfig(),
     throttle: Throttle | ThrottleConfig = ThrottleConfig(),
+    budget_store: BudgetStore | None = None,
 ) -> AsyncIterator[ScrapeSession]:
-    """Launch a browser and give back a ready ScrapeSession; everything closes on exit."""
+    """Launch a browser and give back a ready ScrapeSession; everything closes on exit.
+
+    Pass `budget_store` (e.g. a SqliteStore) to enforce ThrottleConfig.max_pages_per_day."""
     async with open_browser(browser_cfg or BrowserConfig.from_env()) as context:
-        yield ScrapeSession(context, fetch_opts=fetch_opts, human_cfg=human_cfg, throttle=throttle)
+        yield ScrapeSession(
+            context,
+            fetch_opts=fetch_opts,
+            human_cfg=human_cfg,
+            throttle=throttle,
+            budget_store=budget_store,
+        )

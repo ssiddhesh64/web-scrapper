@@ -35,6 +35,7 @@ HELP = {
     "min_interval": "Min seconds between page loads on the same site.",
     "max_interval": "Max seconds between page loads on the same site.",
     "max_pages_per_session": "Stop the session after this many pages.",
+    "max_pages_per_day": "Per site per day, counted across runs in data/scraper.db.",
     "break_every": "Take a longer break every N pages (min, max).",
     "break_seconds": "Length of that break, seconds (min, max). (0, 0) disables breaks.",
     "cooldown_base": "Cool-down after a 429/5xx; doubles on each repeat.",

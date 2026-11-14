@@ -10,6 +10,14 @@ Retry policy, designed so we don't escalate a soft block into a ban:
   honouring Retry-After.
 - FORBIDDEN, CAPTCHA, LOGIN_WALL -> never retried. Trying again immediately only looks more
   bot-like. The caller should stop, cool down or change identity.
+
+Detection layers (all feed classify()):
+1. HTTP status and login-page redirects.
+2. Block phrases in the title, or in the body text of short pages.
+3. Strong block phrases *visible anywhere* on the rendered page, including inside shadow DOM
+   (Reddit renders banners in web components that page.content()/innerText don't include).
+4. JS challenge interstitials (Reddit "Loading https://...", Cloudflare "Just a moment"):
+   we wait for them to clear; if they don't, that's a CAPTCHA.
 """
 
 import asyncio
@@ -49,6 +57,8 @@ BLOCK_PHRASES: dict[str, BlockKind] = {
     "too many requests": BlockKind.RATE_LIMITED,
     "you're doing that too much": BlockKind.RATE_LIMITED,
     "whoa there, pardner": BlockKind.FORBIDDEN,  # Reddit's block page
+    "blocked by network security": BlockKind.FORBIDDEN,  # Reddit: "...blocked by network security"
+    "use your developer token": BlockKind.FORBIDDEN,  # Reddit block page: "log in or use your..."
     "you've been blocked": BlockKind.FORBIDDEN,
     "you have been blocked": BlockKind.FORBIDDEN,
     "request has been blocked": BlockKind.FORBIDDEN,
@@ -66,6 +76,19 @@ LOGIN_PATH = re.compile(r"/(login|signin|sign-in|account/login)(/|\?|$)", re.IGN
 SHORT_PAGE_CHARS = 3_000
 NAV_STATUS_JS = "() => performance.getEntriesByType('navigation')[0]?.responseStatus ?? null"
 
+# Phrases specific enough to count wherever they are VISIBLE on the page, even on long pages
+# and inside shadow DOM (e.g. a block banner above an otherwise normal Reddit feed).
+VISIBLE_BLOCK_PHRASES: dict[str, BlockKind] = {
+    "blocked by network security": BlockKind.FORBIDDEN,
+    "whoa there, pardner": BlockKind.FORBIDDEN,
+    "use your developer token": BlockKind.FORBIDDEN,
+}
+VISIBLE_BLOCK_RE = re.compile("|".join(map(re.escape, VISIBLE_BLOCK_PHRASES)), re.IGNORECASE)
+
+# JS challenge interstitials, recognised by title. Reddit: "Loading https://www.reddit.com/...
+# ?js_challenge=1...", Cloudflare: "Just a moment...".
+CHALLENGE_TITLE_RE = re.compile(r"^\s*(loading https?://|just a moment)", re.IGNORECASE)
+
 
 @dataclass(frozen=True)
 class FetchOptions:
@@ -78,6 +101,8 @@ class FetchOptions:
     backoff_base: float = 5.0  # seconds; doubles each attempt, with jitter
     backoff_max: float = 120.0  # cap per wait. A longer Retry-After means give up instead
     failure_dir: Path | None = Path("diagnostics/failures")  # None = don't save artifacts
+    challenge_timeout_ms: int = 20_000  # how long to wait for a JS challenge to clear
+    screenshot: bool = False  # keep a top-of-page screenshot (before any scrolling) in the result
 
 
 @dataclass
@@ -96,6 +121,10 @@ class FetchResult:
     attempts: int = 0
     elapsed: float = 0.0
     artifacts: list[str] = field(default_factory=list)  # saved screenshot/html on failure
+    challenge_seconds: float | None = None  # time a JS challenge took to clear (None = none seen)
+    challenge_pending: bool = False  # a JS challenge was still showing when we gave up
+    visible_block: list[str] = field(default_factory=list)  # visible block texts (shadow DOM incl.)
+    screenshot: bytes | None = field(default=None, repr=False)  # top of page, before scrolling
 
     @property
     def blocked(self) -> bool:
@@ -109,10 +138,24 @@ class FetchResult:
 # ---------- pure helpers (no browser needed, easy to unit-test) ----------
 
 
+def is_challenge_title(title: str) -> bool:
+    return bool(CHALLENGE_TITLE_RE.match(title or ""))
+
+
 def classify(
-    status: int | None, final_url: str, title: str, text: str
+    status: int | None,
+    final_url: str,
+    title: str,
+    text: str,
+    *,
+    visible: list[str] | tuple[str, ...] = (),
+    challenge_pending: bool = False,
 ) -> tuple[BlockKind, list[str]]:
-    """Decide whether a loaded page is a block page. The first matching rule wins."""
+    """Decide whether a loaded page is a block page. The first matching rule wins.
+
+    `visible`: block texts found on the rendered page (see visible_block_texts).
+    `challenge_pending`: a JS challenge never cleared.
+    """
     signals: list[str] = []
     kind = BlockKind.NONE
 
@@ -128,6 +171,14 @@ def classify(
         hit(BlockKind.FORBIDDEN, f"HTTP {status}: access denied")
     elif status is not None and status >= 500:
         hit(BlockKind.SERVER_ERROR, f"HTTP {status}: server error")
+
+    if challenge_pending:
+        hit(BlockKind.CAPTCHA, "JS challenge did not complete (still on the interstitial)")
+
+    for shown in visible:
+        phrase = next((p for p in VISIBLE_BLOCK_PHRASES if p in shown.lower()), None)
+        if phrase:
+            hit(VISIBLE_BLOCK_PHRASES[phrase], f'Visible on page: "{shown[:160]}"')
 
     if LOGIN_PATH.search(urlparse(final_url).path or ""):
         hit(BlockKind.LOGIN_WALL, f"Redirected to a login page ({urlparse(final_url).path})")
@@ -179,6 +230,45 @@ async def _document_status(page: Page) -> int | None:
     return int(status) if status else None
 
 
+async def _safe_title(page: Page) -> str:
+    try:
+        return await page.title()
+    except PlaywrightError:  # e.g. mid-navigation: execution context destroyed
+        return ""
+
+
+async def _wait_out_challenge(page: Page, timeout_ms: int) -> tuple[bool, float]:
+    """Poll until the page title stops looking like a challenge interstitial.
+
+    Polling (rather than wait_for_function) survives the navigation the challenge triggers.
+    Returns (still_pending, seconds_waited).
+    """
+    started = time.perf_counter()
+    deadline = started + timeout_ms / 1000
+    while True:
+        title = await _safe_title(page)
+        if title and not is_challenge_title(title):
+            return False, time.perf_counter() - started
+        if time.perf_counter() >= deadline:
+            return True, time.perf_counter() - started
+        await page.wait_for_timeout(250)
+
+
+async def visible_block_texts(page: Page, limit: int = 5) -> list[str]:
+    """Visible elements whose text contains a strong block phrase. Playwright's text engine
+    pierces open shadow roots, so this finds banners that page.content() misses."""
+    try:
+        matches = page.get_by_text(VISIBLE_BLOCK_RE)
+        found = []
+        for i in range(min(await matches.count(), limit)):
+            el = matches.nth(i)
+            if await el.is_visible():
+                found.append(" ".join((await el.inner_text()).split())[:300])
+        return found
+    except PlaywrightError:
+        return []
+
+
 async def _goto(page: Page, url: str, opts: FetchOptions, result: FetchResult):
     """page.goto(), but keep the HTTP response even if goto itself raises.
 
@@ -228,6 +318,17 @@ async def _load_once(page: Page, url: str, opts: FetchOptions, result: FetchResu
         except PlaywrightError:
             pass
         return
+    if is_challenge_title(await _safe_title(page)):
+        pending, seconds = await _wait_out_challenge(page, opts.challenge_timeout_ms)
+        result.challenge_seconds = round(seconds, 2)
+        result.challenge_pending = pending
+        if pending:
+            result.final_url = page.url
+            result.title = await _safe_title(page)
+            await _capture_top(page, opts, result)
+            return
+        result.warnings.append(f"Passed a JS challenge in {seconds:.1f}s")
+        result.status = await _document_status(page) or result.status
     try:
         if opts.wait_for == "selector" and opts.wait_selector:
             await page.wait_for_selector(opts.wait_selector, timeout=opts.timeout_ms)
@@ -241,6 +342,18 @@ async def _load_once(page: Page, url: str, opts: FetchOptions, result: FetchResu
     result.title = await page.title()
     result.html = await page.content()
     result.text = await page.locator("body").inner_text()
+    result.visible_block = await visible_block_texts(page)
+    await _capture_top(page, opts, result)
+
+
+async def _capture_top(page: Page, opts: FetchOptions, result: FetchResult) -> None:
+    """Viewport screenshot while still at the top of the page (before human scrolling)."""
+    if not opts.screenshot:
+        return
+    try:
+        result.screenshot = await page.screenshot()
+    except PlaywrightError as e:
+        result.warnings.append(f"Could not take top-of-page screenshot: {e}")
 
 
 async def _save_artifacts(page: Page, result: FetchResult, folder: Path) -> None:
@@ -248,6 +361,9 @@ async def _save_artifacts(page: Page, result: FetchResult, folder: Path) -> None
     host = urlparse(result.url).netloc.replace(":", "_") or "page"
     out = folder / f"{stamp}-{host}-{result.block.value}"
     out.mkdir(parents=True, exist_ok=True)
+    if result.screenshot:
+        (out / "top.png").write_bytes(result.screenshot)
+        result.artifacts.append(str(out / "top.png"))
     try:
         await page.screenshot(path=out / "screenshot.png", full_page=True)
         result.artifacts.append(str(out / "screenshot.png"))
@@ -263,6 +379,10 @@ async def _save_artifacts(page: Page, result: FetchResult, folder: Path) -> None
     summary = f"url: {result.url}\nfinal_url: {result.final_url}\nstatus: {result.status}\n"
     summary += f"block: {result.block}\nerror: {result.error}\nsignals:\n"
     summary += "".join(f"  - {s}\n" for s in result.signals)
+    if result.challenge_seconds is not None:
+        summary += (
+            f"js_challenge: {result.challenge_seconds}s, pending={result.challenge_pending}\n"
+        )
     (out / "summary.txt").write_text(summary, encoding="utf-8")
     result.artifacts += [str(out / "page.html"), str(out / "summary.txt")]
 
@@ -285,7 +405,12 @@ async def fetch(
         try:
             await _load_once(page, url, opts, result)
             result.block, result.signals = classify(
-                result.status, result.final_url, result.title, result.text
+                result.status,
+                result.final_url,
+                result.title,
+                result.text,
+                visible=result.visible_block,
+                challenge_pending=result.challenge_pending,
             )
         except PlaywrightError as e:  # includes goto TimeoutError
             result.error = f"{type(e).__name__}: {str(e).splitlines()[0]}"

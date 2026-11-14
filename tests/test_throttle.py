@@ -46,6 +46,9 @@ def run(coro):
 def test_site_key_groups_subdomains():
     assert site_key("https://old.reddit.com/x") == site_key("https://www.reddit.com/y")
     assert site_key("https://reddit.com") == "reddit.com"
+    assert site_key("http://127.0.0.1:8799/x") == "127.0.0.1"
+    assert site_key("http://10.0.0.1/") != site_key("http://192.168.0.1/")
+    assert site_key("http://[::1]:8765/") == "::1"
 
 
 def test_first_request_is_immediate_then_gap_enforced():
