@@ -1,6 +1,6 @@
 # Architecture & Decisions
 
-Detailed documentation of the project as of **2026-11-14** (Steps 1–4 + the Scraper Lab).
+Detailed documentation of the project as of **2026-11-14** (Steps 1–7 + the Scraper Lab).
 For setup and commands, see the [README](../README.md). For what comes next, see
 [PLAN.md](PLAN.md). For the Camoufox API, see [camoufox_reference.md](camoufox_reference.md).
 
@@ -98,6 +98,12 @@ web-scrapper/
 │   ├── human.py                 browse(): mouse drift, scrolling, reading pause; lognormal_between()
 │   ├── throttle.py              Throttle: per-site gaps, breaks, budget, cool-downs, circuit breaker
 │   ├── session.py               ScrapeSession.visit(), open_session(): throttle → fetch → browse
+│   ├── reddit.py                collect_subreddit(): load a feed, scroll like a person, paginate
+│   ├── storage.py               SqliteStore (records, daily budget, run log), JsonlSink, WriteStats
+│   ├── cli.py                   `web-scrapper` command: reddit / fetch / db / lab, exit codes
+│   ├── extractors/              pure parsers: (html, url) -> records. EXTRACTORS registry
+│   │   ├── __init__.py          EXTRACTORS = {"reddit_listing": ...}
+│   │   └── reddit.py            RedditPost, parse_listing(), subreddit_url(), has_more_posts()
 │   └── lab/                     Scraper Lab (local UI)
 │       ├── server.py            FastAPI app, presets, `scraper-lab` entry point
 │       ├── runner.py            runs one experiment (1+ URLs in one session) → output/runs/<id>/
@@ -105,18 +111,24 @@ web-scrapper/
 │       └── static/index.html    the whole UI: HTML + CSS + vanilla JS, no build step
 │
 ├── tests/
-│   ├── test_fetcher.py          fetcher: classify, retry policy, backoff, edge cases (23 tests)
+│   ├── test_fetcher.py          fetcher: classify, retry policy, backoff, edge cases (31 tests)
 │   ├── test_throttle.py         throttle with a fake clock (14 tests)
-│   └── test_human_session.py    human.browse + ScrapeSession with fake pages (7 tests)
+│   ├── test_human_session.py    human.browse + ScrapeSession with fake pages (7 tests)
+│   ├── test_reddit.py           extractor on a fixture + collector on a realistic fake feed (23 tests)
+│   ├── test_storage.py          JSONL + SQLite sinks, persistent daily budget, incremental runs (13 tests)
+│   ├── test_cli.py              CLI parsing, config, db commands, reddit exit codes, browser faked (16 tests)
+│   ├── test_lab_api.py          Lab API via FastAPI TestClient: schema, validation, runs, sandboxing (17 tests)
+│   ├── __init__.py              makes tests a package (test files share the fake feed)
+│   └── fixtures/reddit_listing.html  synthetic page in real shreddit markup (no real content)
 │
 ├── docs/
 │   ├── ARCHITECTURE.md          this file
 │   ├── PLAN.md                  step-by-step roadmap with checkboxes + anti-ban checklist
 │   └── camoufox_reference.md    Camoufox / Playwright API cheat sheet (checked against 0.5.9)
 │
-├── test_bot.py                  example script: open_session → visit 2 pages → print/save
+├── test_bot.py                  playground: collect_subreddit → output/reddit_<sub>_<sort>.json
 ├── diagnose.py                  fingerprint diagnostic on pixelscan.net → diagnostics/
-├── check_ip.py                  prints the public IP Camoufox uses (still runs on import)
+├── check_ip.py                  prints the public IP the browser uses (honours SCRAPER_PROXY_*)
 ├── test_reddit_json.py          reddrix example (r/MachineLearning, with comments)
 ├── crawler.py, db.py            legacy Selenium crawler → scrape.db, and its dump script
 │
@@ -126,6 +138,9 @@ web-scrapper/
 │   ├── page.html                last test_bot.py result
 │   └── runs/<id>/               one folder per Lab run (see §6)
 ├── profiles/                    (gitignored) persistent browser profiles (cookies, storage)
+├── data/                        (gitignored) scraped data
+│   ├── scraper.db               SQLite: records, reddit_posts view, page_budget, runs
+│   └── jsonl/reddit_post.jsonl  append-only JSON Lines copy
 │
 └── .claude/
     ├── settings.json            hook: runs `ruff format` on every .py file Claude edits
@@ -134,7 +149,7 @@ web-scrapper/
 ```
 
 **Gitignored:** `.venv/`, `__pycache__/`, `*.db` / `*.sqlite*`, `output/`, `profiles/`,
-`diagnostics/failures/` and `docs/` (see §10).
+`data/` and `diagnostics/failures/`.
 
 ---
 
@@ -184,6 +199,8 @@ With a proxy it also gets `proxy={...}` and `geoip=True`. With a profile it gets
 | `backoff_base` | `5.0` s | First backoff is 2.5–5 s, then it doubles each attempt. |
 | `backoff_max` | `120.0` s | Cap per wait. A longer `Retry-After` means give up rather than wait. |
 | `failure_dir` | `diagnostics/failures` | Where failure artifacts go. `None` disables them. |
+| `challenge_timeout_ms` | `20000` | How long to wait for a JS challenge interstitial to clear before calling it `CAPTCHA`. |
+| `screenshot` | `False` | Keep a top-of-page screenshot (before any scrolling) in `result.screenshot`. The Lab turns it on. |
 
 Other constant: `SHORT_PAGE_CHARS = 3000`. Block phrases in the page body only count when the
 page text is this short. Title matches always count.
@@ -211,6 +228,7 @@ A typical page therefore costs about 5–15 s of browsing on top of the load its
 |---|---|---|
 | `min_interval` / `max_interval` | `4.0` / `10.0` s | Gap between page-load **starts** on the same site (log-normal, median about 6.3 s). Time spent browsing counts towards it |
 | `max_pages_per_session` | `60` | Then `SessionBudgetExceeded`. Start a fresh session later |
+| `max_pages_per_day` | `400` | Per site per (local) day, **across runs**, then `DailyBudgetExceeded`. Only enforced when a `budget_store` (e.g. `SqliteStore`) is given |
 | `break_every` | `(15, 30)` pages | How often to take a longer break |
 | `break_seconds` | `(30.0, 120.0)` | Length of that break. `(0, 0)` disables breaks |
 | `cooldown_base` | `60.0` s | After 429/5xx: wait this long, doubling per repeat (60 → 120 → 240 ...) |
@@ -238,11 +256,12 @@ That's naive for suffixes like `.co.uk`, but fine for our targets.
 | Tool | Version | Note |
 |---|---|---|
 | Python | 3.14 | via uv |
-| camoufox | **0.5.9 (pinned)** | `Screen` must come from `camoufox.fingerprints` |
+| camoufox[geoip] | **0.5.9 (pinned)** | `Screen` must come from `camoufox.fingerprints`. The `geoip` extra installs `maxminddb` (3.2.0), needed for `geoip=True` |
 | playwright | 1.62.0 | installed as a camoufox dependency |
 | browserforge | 1.2.4 | |
 | fastapi / uvicorn | 0.162.7 / 0.54.0 | Lab only |
-| pytest / ruff | 9.2.0 / 0.17.5 | dev group. Ruff: line length 100, rules E F I B UP |
+| beautifulsoup4 | 4.15.0 | HTML parsing in extractors (`html.parser` backend) |
+| pytest / ruff / httpx2 | 9.2.0 / 0.17.5 / 2.16 | dev group. Ruff: line length 100, rules E F I B UP. httpx2 backs FastAPI's TestClient |
 | reddrix | 1.2.18 | used by `test_reddit_json.py` |
 
 ---
@@ -292,8 +311,8 @@ Programming errors still raise.
 | `RATE_LIMITED` | HTTP 429, "too many requests", "you're doing that too much" | ✅ |
 | `SERVER_ERROR` | HTTP ≥ 500 | ✅ |
 | `NETWORK_ERROR` | any Playwright error from goto (DNS, reset, proxy, timeout) | ✅ |
-| `FORBIDDEN` | HTTP 401/403, "you've been blocked", "access denied", Reddit's "whoa there, pardner" | ❌ never |
-| `CAPTCHA` | "captcha", "verify you are human", Cloudflare's "Just a moment..." | ❌ never |
+| `FORBIDDEN` | HTTP 401/403, "you've been blocked", "access denied", Reddit's "whoa there, pardner" and "blocked by network security" / "use your developer token", including a **visible banner anywhere on the page** (shadow DOM too) | ❌ never |
+| `CAPTCHA` | "captcha", "verify you are human", or a **JS challenge that never clears** (Reddit "Loading https://…?js_challenge=1", Cloudflare "Just a moment...") | ❌ never |
 | `LOGIN_WALL` | final URL path matches `/login`, `/signin`, `/sign-in`, `/account/login` | ❌ never |
 
 The rule behind this: temporary problems deserve a polite wait. A site that has *judged* you
@@ -305,12 +324,29 @@ random. With `base=5` that gives 2.5–5 s, then 5–10 s, then 10–20 s, cappe
 If the response has a `Retry-After` header (seconds or an HTTP date), the wait is at least that
 long. If it exceeds `backoff_max`, the fetcher gives up with a warning rather than stalling.
 
+**Detection layers** (all feed `classify()`):
+1. HTTP status, plus redirects to a login page.
+2. Block phrases in the title, or in the body text of *short* pages (≤ 3,000 chars).
+3. **Visible block banners anywhere**: `visible_block_texts()` uses Playwright's `get_by_text`
+   (which pierces open shadow roots) for a few unambiguous phrases (`VISIBLE_BLOCK_PHRASES`) and
+   keeps only visible matches. This exists because Reddit renders its UI in web components:
+   `page.content()` and `body.innerText` don't include shadow DOM, so a banner can be on screen yet
+   invisible to layers 1–2. The trade-off: a post that *quotes* one of these exact phrases would
+   trigger a false stop, which errs on the safe side.
+4. **JS challenges**: if the title looks like an interstitial (`CHALLENGE_TITLE_RE`), the fetcher
+   polls the title every 250 ms until it changes (polling survives the challenge's own navigation,
+   which `wait_for_function` doesn't), records `challenge_seconds`, and re-reads the status of the real
+   document. If it never clears within `challenge_timeout_ms`, the result is `CAPTCHA`
+   (`challenge_pending=True`).
+
 **`FetchResult`:** `url, final_url, status, title, html, text, headers, block, signals,
-warnings, error, attempts, elapsed, artifacts`, plus the properties `blocked` and `ok`.
+warnings, error, attempts, elapsed, artifacts, challenge_seconds, challenge_pending,
+visible_block, screenshot` (top-of-page PNG bytes, if requested), plus the properties `blocked` and `ok`.
 `ok` means status < 400 **and** not blocked. Status alone isn't enough: Reddit's login wall returns 200.
 
 **Failure artifacts:** `diagnostics/failures/<YYYYmmdd-HHMMSS>-<host>-<kind>/` contains
-`screenshot.png` (full page), `page.html` and `summary.txt` (url, status, block, error, signals).
+`screenshot.png` (full page), `top.png` (top of the page at load time, if `screenshot=True`),
+`page.html` and `summary.txt` (url, status, block, error, signals, JS challenge timing).
 
 **Two edge cases handled (both found with the Lab):**
 - *Same-document navigation* (only the `#anchor` changes, as SPAs do): `goto()` returns no
@@ -336,7 +372,12 @@ warnings, error, attempts, elapsed, artifacts`, plus the properties `blocked` an
 ### 5.5 `throttle.py`: when the next page load may happen
 
 - `await throttle.wait(url)` sleeps until a load is allowed and returns the seconds waited.
-  It raises `SessionBudgetExceeded` or `DomainBlocked` (both subclasses of `ThrottleStop`).
+  It raises `SessionBudgetExceeded`, `DailyBudgetExceeded` or `DomainBlocked` (all subclasses of
+  `ThrottleStop`).
+- **Daily budget:** `Throttle(cfg, budget_store=store)` asks the store how many pages this site has
+  used today, refuses at `max_pages_per_day`, and adds 1 for every allowed page. `BudgetStore`
+  is a two-method Protocol (`pages_on(day, site)`, `add_pages(day, site, n)`), so
+  `throttle.py` doesn't depend on SQLite. `today` is injectable for tests.
 - `throttle.record(url, block)` reports the outcome. OK resets the failure streak and the
   cool-down doubling. Soft blocks set a cool-down. Hard blocks and failure streaks stop the site.
 - State is per site, with an `asyncio.Lock` per site, so concurrent workers queue up instead of
@@ -354,7 +395,104 @@ warnings, error, attempts, elapsed, artifacts`, plus the properties `blocked` an
   to `session.visits`.
 - `open_session(browser_cfg, ...)` is an async context manager: `open_browser` + `ScrapeSession`.
 
+### 5.7 `extractors/`: HTML → records (pure)
+
+- An extractor is a plain function `(html, url) -> list[dict]`, registered in `EXTRACTORS`.
+  No browser code, so it's tested on saved HTML and can be re-run on old pages after a fix.
+- `extractors/reddit.py` reads new Reddit's `<shreddit-post>` elements. **Only attributes** are
+  used (`id`, `post-title`, `permalink`, `author`, `score`, `comment-count`, `upvote-ratio`,
+  `created-timestamp`, `post-type`, `content-href`, `domain`, `subreddit-name`, `post-language`,
+  the `nsfw` / `spoiler` flags), plus the `<shreddit-post-flair>` text. Attributes are much more
+  stable than CSS classes or visible text.
+- `RedditPost` (frozen dataclass): `id, subreddit, title, permalink, author, score,
+  comment_count, upvote_ratio, created_at (UTC datetime), post_type, url, domain, flair,
+  language, nsfw, spoiler`. `to_dict()` gives JSON-ready output (ISO timestamp).
+- `parse_listing(html)`: feed order, de-duplicated by id. It skips ads (`<shreddit-ad-post>` is a
+  different tag) and elements missing id/title/permalink. Bad numbers or dates become `None`
+  instead of crashing. Relative links become absolute.
+- `subreddit_url(name, sort, t)` validates the name (2–21 chars), the sort (`hot new top rising
+  best controversial`) and the time filter (`top` / `controversial` only).
+- `has_more_posts(html)`: is Reddit's "load more" placeholder (`id="partial-more-posts…"`) still there?
+
+### 5.8 `reddit.py`: collecting a feed (pagination)
+
+`collect_subreddit(session, name, sort="new", t=None, limit=50, max_rounds=None, stale_rounds=3)`
+→ `CollectResult(url, posts, rounds, reason, log, visit)`.
+
+- **Pagination = infinite scroll**, done like a person: load the feed (`session.visit`, no
+  browsing), then repeat *scroll a few times (`FEED_SCROLL`: 2–4 × 600–1200 px) → short read pause
+  → check for block banners → re-parse the page*. We never call Reddit's internal
+  `/svc/shreddit/community-more-posts/...` endpoint directly.
+- **Measured live (r/puzzles):** the first load holds about 25 posts. Each batch is 25 posts,
+  about 13,000 px tall, and Reddit requests the next batch about 3,400 px before the end, so a
+  batch arrives roughly every 12 scroll rounds. 60 posts took 23 rounds and about 2.7 min.
+- **Stop reasons:** `limit reached` · `end of feed` (placeholder gone and nothing new) ·
+  `no new posts after N scroll rounds` (counted **only near the bottom**, i.e. within 1.5 viewports)
+  · `max_rounds (…) reached` (default about 16 rounds per 25 posts) · `blocked while scrolling: …`
+  (a visible banner; the site is then stopped in the throttle) · `throttle: …` · `blocked on load: …`.
+- **Pacing:** the throttle paces *requests*. It's consulted before the first round and after each
+  round that brought a new batch, not before every scroll (live: 4 throttle waits for 23 rounds).
+  Scrolling in between is paced by human pauses.
+- `log` records each round's `posts, new, bottom, height, near_bottom`, which is how the
+  pagination bug below was diagnosed.
+- **Incremental runs:** `seen=lambda pid: store.has("reddit_post", pid)` plus `stop_after_seen=10`
+  stops with `caught up (N posts already stored)` once that many collected posts are already
+  stored. With `sort="new"`, everything further down is older, so it was collected before. Live:
+  a re-run stopped after 1 round instead of 13. Don't use it with `hot`/`top`, whose order changes.
+
+### 5.9 `storage.py`: sinks, budget and run log
+
+Every sink has the same interface: `write(kind, records) -> WriteStats(inserted, updated,
+unchanged, skipped)` and `close()` (the `Sink` Protocol). Records need an `"id"`. A `kind`
+(letters/digits/underscores only) names the record type, so posts, comments etc. can share a store.
+
+| | `JsonlSink(directory="data/jsonl")` | `SqliteStore(path="data/scraper.db")` |
+|---|---|---|
+| Layout | one append-only file per kind: `<kind>.jsonl` | one database file |
+| Duplicates | ids already in the file are **skipped** (first version wins) | **upsert**: latest data kept, `first_seen_at` preserved, `last_seen_at` / `seen_count` updated |
+| Extra | `_scraped_at` UTC timestamp per line, tolerates a torn last line | daily page budget, run log, `summary()` |
+| Use for | simple exports, piping into other tools | querying, incremental runs, tracking scores over time |
+
+**SQLite schema** (`PRAGMA user_version = 1`, WAL mode so the Lab can read while a script writes):
+- `records(kind, id, data JSON, first_seen_at, last_seen_at, seen_count)`, primary key `(kind, id)`.
+  It's generic, so new record types need no migration.
+- `reddit_posts`: a **view** that exposes the JSON fields as typed columns (`data ->> '$.score'`):
+  `id, subreddit, title, author, score, comment_count, upvote_ratio, created_at, post_type,
+  flair, url, permalink, nsfw, spoiler, first_seen_at, last_seen_at, seen_count`.
+- `page_budget(day, site, pages)`: the persistent daily budget.
+- `runs(id, started_at, finished_at, target, reason, records, inserted, updated, meta JSON)`.
+
+```bash
+sqlite3 -header -column data/scraper.db \
+  "select score, comment_count, title from reddit_posts order by score desc limit 10"
+```
+
+`write()` runs one transaction per batch and compares the new JSON (keys sorted) with the stored
+JSON to tell `updated` from `unchanged`.
+
 ---
+
+## 5.10 `cli.py`: the `web-scrapper` command
+
+```bash
+uv run web-scrapper reddit puzzles --limit 50 [--sort new|hot|top|...] [--time week] [--json]
+uv run web-scrapper fetch https://www.reddit.com/r/puzzles/ [--wait-selector shreddit-post]
+uv run web-scrapper db summary | db posts --by score|comments|new|seen | db export -o posts.csv
+uv run web-scrapper lab
+```
+
+- `reddit` = `collect_subreddit` + `SqliteStore` (+ `JsonlSink` unless `--no-jsonl`) + a run
+  log + the daily budget. It's **incremental by default for `--sort new`** (`--no-incremental` to
+  turn that off). Defaults are the anti-block settings: `profiles/reddit`, `--locale en-IN`,
+  waiting for `shreddit-post`, headed.
+- Browser flags (`--headless`, `--profile`, `--no-profile`, `--locale`) go on top of
+  `BrowserConfig.from_env()`, so `SCRAPER_PROXY_*` still applies.
+- **Exit codes** for cron/scripts: `0` ok · `1` error · `2` usage · `3` blocked · `4` stopped by
+  throttle/budget. `--json` writes records to stdout (JSON lines) and the summary to stderr.
+- `db summary` also shows **today's page budget** (`reddit.com N/400`). `db export` writes CSV or
+  JSONL by file extension.
+- Testable by design: `main(argv) -> int`, `browser_config(args)` is pure, and the
+  browser-facing calls (`open_session`, `collect_subreddit`) are module attributes, which tests replace.
 
 ## 6. Scraper Lab
 
@@ -372,13 +510,18 @@ A local UI for running experiments quickly. Start it with `uv run scraper-lab` a
   back to the `SCRAPER_PROXY_*` environment variables.
 - **Human behaviour** / **Throttle**: generated from `HumanConfig` / `ThrottleConfig`, the same way.
 - **Page load & behaviour**: the `FetchOptions` fields and screenshot options.
-- **Extract**: name / CSS selector / attribute rows (empty = text, `html` = innerHTML,
-  or an attribute name).
+- **Extract**: an **Extractor** dropdown (any entry in `EXTRACTORS`, run on the final page HTML,
+  after human scrolling has loaded more items), a **Save records** checkbox (upserts them into
+  `data/scraper.db` under the extractor's kind from `EXTRACTOR_KINDS`, and logs the run), plus
+  name / CSS selector / attribute rows (empty = text, `html` = innerHTML, or an attribute name).
+- Every Lab run uses `data/scraper.db` as the throttle's **daily budget** store.
+- A **Database** box above the run history shows the stored counts per kind and subreddit (`GET /api/db`).
 - **Run JavaScript**: evaluated in Camoufox's isolated world (invisible to the page).
 
 **Result tabs:** Overview (block signals, page facts, timings, *identity the page sees*),
 **Session** (every visit: result, throttle wait, fetch time, attempts, what browsing did, plus the
-throttle's decisions), Screenshot, Extract, Text (searchable), HTML (source, or rendered with scripts disabled), Network
+throttle's decisions), **Records** (the extractor's output as a table, with Copy / Download JSON),
+Screenshot (at load + at end), Extract, Text (searchable), HTML (source, or rendered with scripts disabled), Network
 (filterable), Console, Cookies (names only, values hidden), Launch config, JS, Raw JSON.
 
 **History:** every run is stored in `output/runs/<YYYYmmdd-HHMMSS-mmm>/`:
@@ -386,7 +529,8 @@ throttle's decisions), Screenshot, Extract, Text (searchable), HTML (source, or 
 From the history list you can view a run, **Load inputs** into the form, **Re-run**, or delete it.
 
 **Presets** (edit `PRESETS` in `lab/server.py`):
-my site · old.reddit r/python (now redirects to login) · session demo (3 pages of my site) · reddit new UI r/python (`shreddit-post`)
+my site · old.reddit r/python (now redirects to login) · session demo (3 pages of my site) ·
+**reddit r/puzzles newest → Records** (`reddit_listing` extractor) · reddit new UI r/python (raw selectors)
 · reddit JSON r/python · browserscan · pixelscan · httpbin headers · public IP.
 
 **How it stays in sync with the code:** runs go through the real `open_browser()` and
@@ -409,7 +553,26 @@ so its scripts can't run on the Lab's origin. Proxy passwords are masked in save
 
 - `uv run pytest` runs `tests/` only (`testpaths = ["tests"]` in pyproject), so the root
   scripts named `test_*.py` (which launch browsers) are never collected.
-- 44 tests, all with fakes, under a second in total.
+- 121 tests, all with fakes, about 1.3 s in total.
+- `tests/test_cli.py`: parser defaults/validation, flags → `BrowserConfig` (env proxy kept), `db
+  summary/posts/export` (CSV + JSONL) on a temp DB, `reddit` with a faked browser and collector:
+  storage, incremental only for `new`, the budget store passed, `--json` stdout/stderr split, and
+  the exit code for each outcome (blocked on load / while scrolling → 3, throttle → 4, caught up → 0).
+- `tests/test_lab_api.py`: the lab's HTTP API with FastAPI's `TestClient` and temp dirs. It covers
+  schema sections and field kinds, form ⇄ config round trip, password masking, every `/api/run`
+  validation error (rejected *before* a browser starts), 409 while busy, run list/get/delete,
+  run-id validation, sandboxed HTML (CSP), the screenshot name allow-list, `/api/db`, and the index page.
+- `tests/test_storage.py`: JSONL appends and dedupes across reopen, survives a torn line, records
+  without id skipped, bad kinds rejected. SQLite inserted/updated/unchanged, `first_seen_at` kept,
+  `seen_count`, typed view, persistence on disk, budget and run log. The daily budget is shared
+  across sessions and subdomains, other sites are unaffected, and it resets the next day; no store
+  means no daily limit. Incremental "caught up" stop.
+- `tests/test_reddit.py`: parsing the synthetic fixture (order, ads/duplicates/incomplete
+  skipped, every field, tolerant parsing, JSON output, `has_more_posts`), URL validation, and
+  `collect_subreddit` against a `FeedPage` fake that behaves like the real feed (pixel heights,
+  scroll position, batches load only near the bottom). It covers the limit, the long first page
+  (a regression test, verified to fail without the fix), end of feed, nothing loading at the bottom,
+  max rounds, auto max rounds, a block banner mid-scroll, the throttle budget, and per-batch pacing.
 - `tests/test_throttle.py`: a `FakeClock` whose `sleep()` advances time. It covers the gap
   enforced and not constant, no wait when the gap has passed, sites independent, subdomains
   grouped, budget, breaks, cool-down doubling/reset/cap, hard block stops the whole site (other
@@ -471,6 +634,27 @@ so its scripts can't run on the Lab's origin. Proxy passwords are masked in save
 | D35 | Browse **only after OK** loads | Interacting with a block page wastes time and adds no realism. |
 | D36 | `fetch()` recovers the real status when goto raises after a response | Empty-body 403s must not become retryable network errors (see §5.3). |
 | D37 | Frozen config dataclasses marked immutable for ruff (`extend-immutable-calls`) | They're safe as default arguments, so the B008 warnings were false positives. |
+| D38 | Reddit's "network security" wording = `FORBIDDEN` (hard block) | The page tells you to log in or use a developer token. Retrying won't help and escalates. |
+| D39 | Search the **rendered page** (shadow DOM included) for strong block phrases, visible only | Reddit's web components hide banners from `page.content()`/`innerText`. A block must never be reported as OK. |
+| D40 | **Wait out JS challenges** by polling the title; never-cleared challenge = `CAPTCHA` | Checking during the interstitial gives a stale title/status, and scrolling during a challenge looks robotic. |
+| D41 | Optional top-of-page screenshot taken in `fetch()` (before browsing), saved with failures and in the Lab | End-of-run screenshots are scrolled, so a banner at the top was out of view. |
+| D42 | Reddit source = **new Reddit in the browser** (`shreddit-post`). JSON/official API stays the alternative | Works logged out (verified). old.reddit needs login. It's what the stealth stack is for. |
+| D43 | Extractors are **pure functions over HTML**, in a registry | Testable offline, reusable on saved pages, any fetcher can use them, and the Lab lists them. |
+| D44 | Read **attributes only** from `shreddit-post` | Far more stable than class names or visible text. |
+| D45 | Paginate by **scrolling like a person**, never by calling the internal more-posts endpoint | Direct endpoint calls look nothing like a reader. Scrolling is what the site expects. |
+| D46 | "Stale" rounds count **only near the bottom** of the loaded feed | Higher up, the next batch just hasn't been requested yet (found live; see §9). |
+| D47 | Throttle paces **batch requests**, not scroll rounds. `max_rounds` scales with `limit` | Rounds without a request don't need a 4–10 s gap. The old way wasted budget and time. |
+| D48 | Two sinks behind one `Sink` interface: **SQLite** (main) and **JSONL** (simple export) | SQLite for querying and upserts. JSONL for portability. Callers don't care which. |
+| D49 | One generic `records` table (JSON `data`) + **views** per kind | New record types (comments...) need no migration, yet queries still get typed columns. |
+| D50 | **Upsert** that keeps `first_seen_at` (not `INSERT OR REPLACE` as in `crawler.py`) | Scores and comments change; we want the latest data *and* when a post first appeared. |
+| D51 | Daily page budget **persisted per site per local day**, via a `BudgetStore` Protocol | Limits must survive restarts. The Protocol keeps the throttle independent of SQLite. |
+| D52 | **Incremental runs** stop when "caught up" with stored posts (`sort="new"` only) | Re-runs only fetch what's new, so far fewer requests and less ban risk. |
+| D53 | `site_key()` keeps **IP addresses whole** | The last-two-labels rule turned `127.0.0.1` into `0.1`, merging unrelated IPs (found while testing the Lab). |
+| D54 | CLI with **argparse** (stdlib), subcommands `reddit` / `fetch` / `db` / `lab` | No new dependency, and it fits the small surface. |
+| D55 | Distinct **exit codes** (3 blocked, 4 throttle/budget) and `--json` → stdout | Lets cron/scripts react (e.g. back off on 3/4) and pipe records into other tools. |
+| D56 | CLI defaults = the anti-block settings; incremental by default for `new` | The safe path is the easy path. |
+| D57 | Test the lab's HTTP API with `TestClient`, validating inputs before any browser launch | The UI's backend had no automated tests, and validation must not cost a browser launch. |
+| D58 | Housekeeping: drop the `asyncio` backport, add `camoufox[geoip]`, guard `check_ip.py`, lint the legacy scripts | Removes a shadowing risk, enables geoip with proxies, makes imports safe, and leaves the repo lint-clean. |
 
 ---
 
@@ -492,6 +676,25 @@ so its scripts can't run on the Lab's origin. Proxy passwords are masked in save
   httpbin `/status/403`). This made a 403 look like a retryable network error. Fixed (D36).
   Verified live: 403 → 1 attempt → site stopped, next URL never requested. 429 → retried → 8 s
   cool-down → next page waited exactly 8 s → OK.
+- **Reddit serves a JS challenge to fresh browsers** (`?js_challenge=1`, title "Loading https://…",
+  plus reCAPTCHA Enterprise scoring). It usually clears in about 1–5 s. A user-reported
+  "Your request has been blocked by network security. Please try to login with your Reddit
+  account." could not be reproduced, but it exposed four blind spots, now fixed (D38–D41). Likely
+  causes of that block: a VPN being on (ProtonVPN and a free VPN are installed on the dev Mac), a
+  shared (CGNAT) residential IP, fresh no-cookie identities on every run, scrolling during the
+  challenge, and small fingerprint mismatches (`en-US` languages vs `en-IN` Intl locale; a spoofed
+  screen larger than the real display). Mitigations: VPN off, a persistent profile, waiting for
+  `shreddit-post`, and consistent locale/screen.
+- **CLI (Step 7), live:** `fetch` on the dev site returned 200 / exit 0. `reddit puzzles --limit 40`
+  stopped as `caught up (27 posts already stored)` after 1 round in about 24 s / exit 0.
+- **Storage (Step 6), live:** run 1 inserted 30 posts (13 rounds). The re-run stopped as
+  `caught up (27 posts already stored)` after 1 round, wrote 0 new / 27 unchanged, and took about
+  25 s. Both runs are in `runs`, and the budget shows `reddit.com: 5` pages for the day.
+- **`site_key` bug:** IPs were reduced to their last two labels (`127.0.0.1` → `0.1`). Fixed (D53).
+- **Feed pagination (Step 5):** the first version stopped at 27 posts ("no new posts after 3
+  rounds") because it counted rounds that hadn't yet reached the bottom of a long first page as
+  stale. The per-round log showed batches arriving every ~12 rounds. It was fixed (D46), plus
+  per-batch pacing (D47). Live: 60 unique posts, batches at rounds 1/12/23, 4 throttle waits.
 - Launch is the slowest phase (about 11 s of a 15 s run), which is a reason to reuse a browser or
   context across many pages later instead of relaunching per page.
 
@@ -500,15 +703,15 @@ so its scripts can't run on the Lab's origin. Proxy passwords are masked in save
 ## 10. Known gaps and next steps
 
 **Housekeeping**
-- The `asyncio` PyPI package is still listed in dependencies. It's an obsolete backport of a
-  stdlib module and should be removed (`uv remove asyncio`).
-- `check_ip.py` still runs at import time. `crawler.py` imports `selenium`, which isn't installed.
-- Existing ruff issues in the legacy scripts are not fixed yet.
+- `crawler.py` imports `selenium`, which isn't installed (legacy; not extended).
+- No CI yet: tests and lint run locally (`uv run pytest`, `uv run ruff check .`).
 
 **Roadmap** (details in [PLAN.md](PLAN.md))
 - ~~**Step 4**: human behaviour + throttling~~ **done** (`human.py`, `throttle.py`, `session.py`).
-  Not done yet: a *daily* budget that persists across runs (needs storage, so it comes with Step 6).
-- **Step 5 (next)**: Reddit extractor (new UI / `.json`), pagination.
-- **Step 6**: storage sinks (JSONL, then SQLite, deduplicated by post id).
-- **Step 7**: more tests + a CLI (`uv run web-scrapper reddit r/python --limit 50`).
-- **Step 8**: scale, with a proxy pool, one identity per worker, and `AsyncNewContext`.
+  The daily budget that persists across runs was added in Step 6.
+- ~~**Step 5**: Reddit extractor + pagination~~ **done** (`extractors/`, `reddit.py`).
+  Not done yet: post detail pages (comments), and a JSON-endpoint extractor as an alternative.
+- ~~**Step 6**: storage~~ **done** (`storage.py`: `SqliteStore`, `JsonlSink`, daily budget,
+  run log, incremental runs).
+- ~~**Step 7**: tests + CLI~~ **done** (`cli.py`, CLI + lab API tests, housekeeping).
+- **Step 8 (next)**: scale, with a proxy pool, one identity per worker, and `AsyncNewContext`.

@@ -74,23 +74,39 @@ Each arrow is a plain function call on a small interface, so any box can be swap
 - [x] Fixed two fetcher bugs found live: same-document navigations, and empty-body 403s that looked like network errors
 - [ ] Later: a daily budget persisted across runs (with storage, Step 6)
 
-### Step 5: Reddit extractor
-- [ ] Note (2026-11-14, found with the Lab): logged-out `old.reddit.com` now redirects to
-      `/login/?reason=lor2` ("accounts are required to access old Reddit"), so old.reddit is out
-      unless logged in.
-- [ ] Decide on a source: `old.reddit.com` HTML (simple, stable selectors), new-Reddit `shreddit-*`
-      elements, or the `.json` endpoints / `reddrix`. Prefer the `.json` endpoints / the official API where possible
-- [ ] `extractors/reddit.py`: listing → posts (id, title, author, score, url, created, num_comments)
-- [ ] Pagination (`after=` cursor / "next" link), with a limit
+### Step 4.5: Reddit block-detection fixes (done)
+- [x] Reddit "blocked by network security" / "use your developer token" → FORBIDDEN
+- [x] Visible block banners detected inside shadow DOM (`get_by_text`), even on long pages
+- [x] JS challenge interstitials waited out (title polling); never cleared → CAPTCHA
+- [x] Top-of-page screenshot before browsing (`FetchOptions.screenshot`), in failure artifacts and in the Lab
+- [ ] Recommended for Reddit runs: VPN off, `profile_dir="profiles/reddit"`, `wait_selector="shreddit-post"`,
+      `extra={"locale": "en-IN"}`, `max_screen` = the real display
 
-### Step 6: storage
-- [ ] `Sink` protocol. `JsonlSink` first, then `SqliteSink` (port ideas from `crawler.py`)
-- [ ] De-duplicate by post id, so re-runs are incremental
+### Step 5: Reddit extractor (done)
+- [x] Source decided: **new Reddit in the browser** (`shreddit-post` attributes). old.reddit needs login (found 2026-11-14).
+      The `.json` endpoints / official API stay the alternative for bulk data
+- [x] `extractors/reddit.py`: `RedditPost` (id, subreddit, title, permalink, author, score, comments, ratio, created_at, type, url, domain, flair, language, nsfw, spoiler)
+- [x] `extractors/__init__.py`: `EXTRACTORS` registry of pure `(html, url) -> records` functions
+- [x] `reddit.collect_subreddit()`: infinite-scroll pagination like a person, with a limit, stop reasons, a per-round log, block checks while scrolling, and per-batch throttle pacing
+- [x] Lab: Extractor dropdown + Records tab (copy/download JSON), new r/puzzles preset
+- [x] Fixed live: pagination stopped early on long first pages; throttle was pacing every scroll round
+- [ ] Later: post detail pages (comments); a JSON-endpoint extractor as a fallback
 
-### Step 7: tests + CLI
-- [ ] pytest: extractor tests on saved HTML fixtures, fetcher tests with a fake page
-- [ ] `cli.py` with argparse, wired to `[project.scripts]`
-- [ ] Housekeeping: `uv add "camoufox[geoip]"`, `uv remove asyncio`
+### Step 6: storage (done)
+- [x] `Sink` protocol: `write(kind, records) -> WriteStats(inserted, updated, unchanged, skipped)`
+- [x] `JsonlSink`: append-only `data/jsonl/<kind>.jsonl`, de-duplicated by id across runs
+- [x] `SqliteStore`: generic `records` table + `reddit_posts` view, upsert keeping `first_seen_at`, `seen_count`, run log
+- [x] Daily page budget per site, persisted (`ThrottleConfig.max_pages_per_day=400`, `BudgetStore`); the Step 4 TODO
+- [x] Incremental runs: `collect_subreddit(seen=...)` stops when caught up with stored posts
+- [x] Lab: "Save records" checkbox, Database box, daily budget on every run
+- [x] Fixed: `site_key()` turned IP addresses into `0.1`
+
+### Step 7: tests + CLI (done)
+- [x] pytest: extractor tests on HTML fixtures, fetcher tests with a fake page (done in Steps 3 and 5)
+- [x] `cli.py` (argparse): `web-scrapper reddit | fetch | db summary/posts/export | lab`, wired to `[project.scripts]`
+- [x] Exit codes 0/1/2/3/4, `--json` records to stdout, incremental by default for `--sort new`
+- [x] Tests: `test_cli.py` (16) and `test_lab_api.py` (17, FastAPI TestClient). 121 total
+- [x] Housekeeping: `camoufox[geoip]` (maxminddb), `uv remove asyncio`, `check_ip.py` guarded, legacy lint fixed, httpx2 for TestClient
 
 ### Step 8 (later): scale
 - [ ] Proxy pool, with one sticky identity (profile + proxy + fingerprint) per worker
