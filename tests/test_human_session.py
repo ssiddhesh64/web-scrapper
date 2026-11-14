@@ -54,6 +54,13 @@ class FakePage:
     def is_closed(self):
         return False
 
+    def get_by_text(self, _pattern):
+        class NoMatches:
+            async def count(self):
+                return 0
+
+        return NoMatches()
+
     def on(self, *_):
         pass
 

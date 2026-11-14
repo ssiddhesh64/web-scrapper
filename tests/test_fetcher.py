@@ -92,11 +92,35 @@ class FakeLocator:
         return self.page.text
 
 
+class FakeTextMatches:
+    """What page.get_by_text(regex) returns: the visible banners that match."""
+
+    def __init__(self, texts):
+        self.texts = texts
+
+    async def count(self):
+        return len(self.texts)
+
+    def nth(self, i):
+        text = self.texts[i]
+
+        class Match:
+            async def is_visible(self):
+                return True
+
+            async def inner_text(self):
+                return text
+
+        return Match()
+
+
 class FakePage:
     """Each goto() consumes the next scripted step: (status, url, title, text, headers)
     or an Exception to raise."""
 
-    def __init__(self, steps):
+    def __init__(self, steps, banners=(), titles=()):
+        self.banners = list(banners)  # texts visible on the page, e.g. inside shadow DOM
+        self.titles = list(titles)  # successive title() values (simulates a JS challenge)
         self.steps = list(steps)
         self.url = "about:blank"
         self.title_ = self.text = ""
@@ -139,7 +163,12 @@ class FakePage:
         pass
 
     async def title(self):
+        if self.titles:
+            self.title_ = self.titles.pop(0)
         return self.title_
+
+    def get_by_text(self, pattern):
+        return FakeTextMatches([b for b in self.banners if pattern.search(b)])
 
     async def content(self):
         return f"<html><body>{self.text}</body></html>"
@@ -147,21 +176,23 @@ class FakePage:
     def locator(self, _):
         return FakeLocator(self)
 
-    async def screenshot(self, **_):
-        pass
+    async def screenshot(self, path=None, **_):
+        if path:
+            open(path, "wb").write(b"png")
+        return b"top-png"
 
 
 OK = (200, None, "r/python", "posts " * 100, {})
-OPTS = FetchOptions(retries=2, backoff_base=1, failure_dir=None)
+OPTS = FetchOptions(retries=2, backoff_base=1, failure_dir=None, challenge_timeout_ms=50)
 
 
-def run_fetch(steps, opts=OPTS):
+def run_fetch(steps, opts=OPTS, **page_kwargs):
     sleeps = []
 
     async def fake_sleep(s):
         sleeps.append(s)
 
-    page = FakePage(steps)
+    page = FakePage(steps, **page_kwargs)
     result = asyncio.run(fetch(page, "https://x.com/r/python/", opts, sleep=fake_sleep))
     return result, page, sleeps
 
@@ -234,3 +265,72 @@ def test_empty_body_403_is_forbidden_not_a_retryable_network_error():
 def test_empty_body_429_is_rate_limited_and_retried():
     result, page, _ = run_fetch([EmptyBodyResponse(429), OK])
     assert result.ok and page.gotos == 2
+
+
+# ---------- Reddit "network security" block, shadow DOM, JS challenge, screenshots ----------
+
+REDDIT_BLOCK = (
+    "Your request has been blocked by network security. "
+    "Please try to login with your Reddit account."
+)
+
+
+def test_reddit_network_security_block_page_is_forbidden():
+    kind, signals = classify(200, "https://www.reddit.com/r/puzzles/", "Reddit", REDDIT_BLOCK)
+    assert kind is BlockKind.FORBIDDEN
+
+
+def test_visible_banner_on_long_page_is_detected():
+    # A normal-looking feed (long text, so body phrases are ignored) with a block banner that
+    # only exists in shadow DOM: page.content()/innerText miss it, get_by_text finds it.
+    feed = (200, None, "r/puzzles", "post " * 2000, {})
+    result, page, sleeps = run_fetch([feed, OK], banners=[REDDIT_BLOCK])
+    assert result.block is BlockKind.FORBIDDEN and not result.ok
+    assert any("Visible on page" in s for s in result.signals)
+    assert page.gotos == 1 and sleeps == []  # hard block: never retried
+
+
+def test_harmless_visible_text_is_ignored():
+    feed = (200, None, "r/puzzles", "post " * 2000, {})
+    result, _, _ = run_fetch([feed], banners=["Join the most real place on the internet"])
+    assert result.ok
+
+
+def test_js_challenge_that_clears_is_ok_and_timed():
+    challenge = "Loading https://www.reddit.com/r/puzzles/?solution=abc&js_challenge=1"
+    result, page, _ = run_fetch(
+        [OK], titles=[challenge, challenge, "Reddit - The heart of the internet", "Puzzles"]
+    )
+    assert result.ok and result.challenge_seconds is not None and not result.challenge_pending
+    assert any("JS challenge" in w for w in result.warnings)
+
+
+def test_js_challenge_that_never_clears_is_captcha_not_retried():
+    challenge = "Loading https://www.reddit.com/r/puzzles/?js_challenge=1"
+    stuck = (200, None, challenge, "", {})
+    result, page, sleeps = run_fetch([stuck, OK])
+    assert result.block is BlockKind.CAPTCHA and result.challenge_pending
+    assert page.gotos == 1 and sleeps == []
+
+
+def test_is_challenge_title():
+    from web_scrapper.fetcher import is_challenge_title
+
+    assert is_challenge_title("Loading https://www.reddit.com/r/x/?js_challenge=1")
+    assert is_challenge_title("Just a moment...")
+    assert not is_challenge_title("Loading screens in games - r/gamedev")
+    assert not is_challenge_title("Puzzles")
+
+
+def test_top_screenshot_only_when_asked():
+    assert run_fetch([OK])[0].screenshot is None
+    shot = run_fetch([OK], FetchOptions(failure_dir=None, screenshot=True))[0].screenshot
+    assert shot == b"top-png"
+
+
+def test_failure_artifacts_include_top_screenshot(tmp_path):
+    opts = FetchOptions(retries=0, failure_dir=tmp_path, screenshot=True)
+    result, _, _ = run_fetch([(403, None, "Forbidden", "nope", {})], opts)
+    folder = next(tmp_path.iterdir())
+    assert (folder / "top.png").read_bytes() == b"top-png"
+    assert str(folder / "top.png") in result.artifacts
