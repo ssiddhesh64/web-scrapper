@@ -8,16 +8,16 @@ authors = [
 ]
 requires-python = ">=3.14"
 dependencies = [
-    "asyncio>=4.0.0",
+    "beautifulsoup4>=4.15.0",
     "browserforge>=1.2.4",
-    "camoufox==0.5.9",
+    "camoufox[geoip]==0.5.9",
     "fastapi>=0.162.7",
     "reddrix>=1.2.18",
     "uvicorn>=0.54.0",
 ]
 
 [project.scripts]
-web-scrapper = "web_scrapper:main"
+web-scrapper = "web_scrapper.cli:entry"
 scraper-lab = "web_scrapper.lab.server:main"
 
 [build-system]
@@ -26,6 +26,7 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "httpx2>=2.16.0",
     "pytest>=9.2.0",
     "ruff>=0.17.5",
 ]
