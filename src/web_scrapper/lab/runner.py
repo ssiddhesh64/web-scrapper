@@ -23,15 +23,19 @@ from typing import Any
 
 from ..browser import build_launch_kwargs, open_browser
 from ..config import BrowserConfig, HumanConfig, ThrottleConfig
+from ..extractors import EXTRACTOR_KINDS, EXTRACTORS
 from ..fetcher import FetchOptions
 from ..session import ScrapeSession
+from ..storage import SqliteStore
 from ..throttle import ThrottleStop
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 RUNS_DIR = PROJECT_ROOT / "output" / "runs"
+DB_PATH = PROJECT_ROOT / "data" / "scraper.db"  # records + daily page budget + run log
 
 TEXT_LIMIT = 50_000
 EXTRACT_LIMIT = 200
+RECORDS_LIMIT = 1_000
 NETWORK_LIMIT = 1_500
 
 IDENTITY_JS = """() => ({
@@ -78,6 +82,8 @@ class RunRequest:
     full_page: bool = False
     extract: list[ExtractRule] = field(default_factory=list)
     js: str = ""
+    extractor: str = ""  # name in extractors.EXTRACTORS, run on the final page HTML
+    save_records: bool = False  # upsert extracted records into data/scraper.db
 
 
 def mask_secrets(obj: Any) -> Any:
@@ -125,6 +131,7 @@ async def run_experiment(req: RunRequest, raw_request: dict[str, Any]) -> dict[s
     def mark(name: str):
         marks[name] = time.perf_counter()
 
+    store = SqliteStore(DB_PATH)  # extracted records + the throttle's daily page budget
     try:
         result["launch_kwargs"] = describe_kwargs(build_launch_kwargs(req.config))
         async with open_browser(req.config) as context:
@@ -173,9 +180,14 @@ async def run_experiment(req: RunRequest, raw_request: dict[str, Any]) -> dict[s
                 retries=req.retries,
                 backoff_base=req.backoff_base,
                 failure_dir=None,  # the Lab already saves everything into the run folder
+                screenshot=req.screenshot,  # top of page, before human scrolling
             )
             session = ScrapeSession(
-                context, fetch_opts=opts, human_cfg=req.human, throttle=req.throttle
+                context,
+                fetch_opts=opts,
+                human_cfg=req.human,
+                throttle=req.throttle,
+                budget_store=store,
             )
             session.page = page  # reuse the tab we attached listeners to
 
@@ -195,6 +207,7 @@ async def run_experiment(req: RunRequest, raw_request: dict[str, Any]) -> dict[s
                         "status": v.result.status,
                         "block": v.result.block.value,
                         "attempts": v.result.attempts,
+                        "challenge_seconds": v.result.challenge_seconds,
                         "fetch_seconds": v.result.elapsed,
                         "browse": v.browse,
                         "title": v.result.title,
@@ -217,7 +230,12 @@ async def run_experiment(req: RunRequest, raw_request: dict[str, Any]) -> dict[s
                 block=last.block.value,
                 block_signals=last.signals,
                 attempts=last.attempts,
+                challenge_seconds=last.challenge_seconds,
+                visible_block=last.visible_block,
             )
+            if last.screenshot:
+                (run_dir / "top.png").write_bytes(last.screenshot)
+                result["top_screenshot"] = True
             result["warnings"] += last.warnings
             if last.error:
                 result["error"] = last.error
@@ -254,6 +272,21 @@ async def run_experiment(req: RunRequest, raw_request: dict[str, Any]) -> dict[s
                 extracted.append(entry)
             result["extract"] = extracted
 
+            if req.extractor:
+                try:
+                    records = EXTRACTORS[req.extractor](html, result["final_url"])
+                    result["records"] = records[:RECORDS_LIMIT]
+                    result["records_count"] = len(records)
+                    result["extractor"] = req.extractor
+                    if req.save_records and records:
+                        kind = EXTRACTOR_KINDS.get(req.extractor, req.extractor)
+                        run_id = store.start_run(result["final_url"], {"source": "lab"})
+                        stats = store.write(kind, records)
+                        store.finish_run(run_id, "lab run", len(records), stats)
+                        result["db"] = {"path": str(DB_PATH), "kind": kind, **stats.as_dict()}
+                except Exception as e:  # noqa: BLE001 - surface extractor bugs in the UI
+                    result["records_error"] = f"{type(e).__name__}: {e}"
+
             if req.js.strip():
                 try:
                     result["js_result"] = await page.evaluate(req.js)
@@ -274,6 +307,7 @@ async def run_experiment(req: RunRequest, raw_request: dict[str, Any]) -> dict[s
         result["error"] = f"{type(e).__name__}: {str(e).splitlines()[0] if str(e) else ''}"
         result["traceback"] = traceback.format_exc()
     finally:
+        store.close()
         mark("end")
         start = marks["start"]
         order = ["launched", "loaded", "extracted", "end"]

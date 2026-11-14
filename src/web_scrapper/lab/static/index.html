@@ -249,8 +249,14 @@ td.mono { font-family: var(--mono); overflow-wrap: anywhere; }
     </details>
 
     <details class="card" open>
-      <summary>Extract <span class="hint">CSS selectors</span></summary>
+      <summary>Extract <span class="hint">extractor + CSS selectors</span></summary>
       <div class="card-body">
+        <div class="field">
+          <label for="extractor">Extractor <code class="name">extractors/</code></label>
+          <select id="extractor"><option value="">none</option></select>
+          <div class="help">Parses the final page HTML into records (Records tab). Human scrolls load more feed items first.</div>
+        </div>
+        <label class="check"><input type="checkbox" id="save_records"> Save records to <code>data/scraper.db</code> (upsert by id)</label>
         <div class="rule-head"><span>Name</span><span>Selector</span><span>Attribute</span><span></span></div>
         <div class="rules" id="rules"></div>
         <div class="help" style="font-size:11.5px;color:var(--muted)">Attribute: empty = text, <code>html</code> = innerHTML, or an attribute name like <code>href</code>.</div>
@@ -280,6 +286,8 @@ td.mono { font-family: var(--mono); overflow-wrap: anywhere; }
   </main>
 
   <aside class="col history-col">
+    <h2>Database <button class="ghost" id="refreshDb" title="Refresh">↻</button></h2>
+    <div class="box" id="dbBox" style="margin-bottom:16px;font-size:12.5px">…</div>
     <h2>Runs <button class="ghost" id="refreshRuns" title="Refresh">↻</button></h2>
     <ul class="hist" id="history"></ul>
   </aside>
@@ -439,15 +447,16 @@ function getRules() {
 function setRules(rules = []) { $("#rules").replaceChildren(); rules.forEach(addRule); if (!rules.length) addRule(); }
 
 /* ---------- Whole form state ---------- */
-const SIMPLE = ["url", "wait_until", "wait_for", "wait_selector", "timeout_ms", "settle_ms", "retries", "backoff_base", "js"];
+const SIMPLE = ["url", "wait_until", "wait_for", "wait_selector", "timeout_ms", "settle_ms", "retries", "backoff_base", "js", "extractor"];
 const DEFAULTS = { url: "", wait_until: "domcontentloaded", wait_for: "networkidle", wait_selector: "",
-  timeout_ms: 30000, settle_ms: 0, retries: 1, backoff_base: 5, screenshot: true, full_page: false, extract: [], extra_urls: [], js: "" };
+  timeout_ms: 30000, settle_ms: 0, retries: 1, backoff_base: 5, screenshot: true, full_page: false, extract: [], extra_urls: [], js: "", extractor: "", save_records: false };
 
 function getState() {
   const s = {};
   for (const k of SIMPLE) s[k] = $(`#${k}`).value;
   for (const k of ["timeout_ms", "settle_ms", "retries", "backoff_base"]) s[k] = Number(s[k]) || 0;
   s.screenshot = $("#screenshot").checked; s.full_page = $("#full_page").checked;
+  s.save_records = $("#save_records").checked;
   s.extract = getRules();
   s.extra_urls = $("#extra_urls").value.split("\n").map(u => u.trim()).filter(Boolean);
   for (const key of Object.keys(SECTIONS)) s[key] = getConfig(key);
@@ -457,6 +466,7 @@ function setState(s = {}, { keepConfig = false } = {}) {
   const v = { ...DEFAULTS, ...s };
   for (const k of SIMPLE) $(`#${k}`).value = v[k] ?? "";
   $("#screenshot").checked = !!v.screenshot; $("#full_page").checked = !!v.full_page;
+  $("#save_records").checked = !!v.save_records;
   setRules(v.extract);
   $("#extra_urls").value = (v.extra_urls || []).join("\n");
   if (!keepConfig) for (const key of Object.keys(SECTIONS)) setConfig(key, s[key] || {});
@@ -485,7 +495,7 @@ async function run() {
   try {
     const result = await api("/api/run", { method: "POST", body: JSON.stringify(body) });
     current = { result, request: body };
-    renderResult(); loadHistory();
+    renderResult(); loadHistory(); loadDb();
   } catch (e) {
     toast(e.message);
   } finally { setRunning(false); }
@@ -513,13 +523,14 @@ function verdictPill(r) {
 }
 
 const TABS = [
-  ["overview", "Overview"], ["session", "Session"], ["screenshot", "Screenshot"], ["extract", "Extract"], ["text", "Text"],
+  ["overview", "Overview"], ["session", "Session"], ["records", "Records"], ["screenshot", "Screenshot"], ["extract", "Extract"], ["text", "Text"],
   ["html", "HTML"], ["network", "Network"], ["console", "Console"], ["cookies", "Cookies"],
   ["launch", "Launch config"], ["js", "JS"], ["raw", "Raw JSON"],
 ];
 function tabCount(key, r) {
   switch (key) {
     case "session": return r.visits?.length || null;
+    case "records": return r.records_count ?? null;
     case "extract": return r.extract?.length ? r.extract.reduce((a, e) => a + (e.count || 0), 0) : null;
     case "network": return r.network?.length || null;
     case "console": return r.console?.length || null;
@@ -570,7 +581,8 @@ const RENDER = {
 
     const page = h("div", { class: "box" }, h("h3", {}, "Page"), kv({
       "Final URL": r.final_url, "Title": r.title,
-      "Block type": r.block && r.block !== "none" ? r.block : null, "Attempts": r.attempts, "Browser": r.browser_version,
+      "Block type": r.block && r.block !== "none" ? r.block : null, "Attempts": r.attempts,
+      "JS challenge": r.challenge_seconds != null ? `passed in ${r.challenge_seconds}s` : null, "Browser": r.browser_version,
       "HTML": r.html_chars != null ? `${r.html_chars.toLocaleString()} chars` : null,
       "Text": r.text_chars != null ? `${r.text_chars.toLocaleString()} chars` : null,
       "Responses": r.network_summary?.responses, "HTTP ≥400": r.network_summary?.errors,
@@ -592,6 +604,38 @@ const RENDER = {
     p.append(h("div", { class: "grid" }, signals, page, timing, idBox));
     if (r.traceback) p.append(h("h3", { style: "margin:16px 0 8px" }, "Traceback"), h("pre", { class: "block" }, r.traceback));
   },
+  records(p, r) {
+    if (r.records_error) { p.append(h("div", { class: "signal bad" }, r.records_error)); return; }
+    const recs = r.records || [];
+    if (!r.extractor) { p.append(h("div", { class: "empty" }, "No extractor selected for this run. Pick one in the Extract card.")); return; }
+    if (!recs.length) { p.append(h("div", { class: "empty" }, `Extractor "${r.extractor}" found no records on the final page.`)); return; }
+    const cols = Object.keys(recs[0]);
+    const PREFERRED = ["title", "score", "comment_count", "author", "created_at", "post_type", "flair", "permalink"];
+    let shown = PREFERRED.filter(c => cols.includes(c));
+    if (!shown.length) shown = cols.slice(0, 8);
+    const cell = (k, v) => {
+      if (v == null || v === "") return h("td", { class: "muted" }, "");
+      if (typeof v === "string" && /^https?:\/\//.test(v)) return h("td", { class: "mono" }, h("a", { href: v, target: "_blank", rel: "noopener" }, "open ↗"));
+      if (k === "created_at") return h("td", {}, new Date(v).toLocaleString());
+      return h("td", { class: typeof v === "number" ? "" : "mono" }, String(v));
+    };
+    const download = () => {
+      const blob = new Blob([JSON.stringify(recs, null, 2)], { type: "application/json" });
+      const a = h("a", { href: URL.createObjectURL(blob), download: `${r.id}-${r.extractor}.json` });
+      document.body.append(a); a.click(); a.remove();
+    };
+    p.append(h("div", { class: "toolbar" },
+        h("b", {}, `${r.records_count} records`), h("span", { class: "muted" }, `extractor: ${r.extractor}`),
+        copyBtn(() => JSON.stringify(recs, null, 2), "Copy JSON"), h("button", { onclick: download }, "Download JSON"),
+        r.records_count > recs.length ? h("span", { class: "muted" }, `showing first ${recs.length}`) : null),
+      r.db ? h("div", { class: "signal ok", style: "margin-bottom:10px" },
+        `Saved to ${r.db.path.split("/").slice(-2).join("/")} as "${r.db.kind}": ${r.db.inserted} new, ${r.db.updated} updated, ${r.db.unchanged} unchanged`) : null,
+      h("div", { style: "overflow-x:auto" }, h("table", {},
+        h("thead", {}, h("tr", {}, h("th", {}, "#"), shown.map(c => h("th", {}, c.replace(/_/g, " "))))),
+        h("tbody", {}, recs.map((rec, i) => h("tr", {}, h("td", {}, i + 1), shown.map(c => cell(c, rec[c]))))))),
+      h("p", { class: "help", style: "color:var(--muted);margin-top:10px" },
+        `All fields: ${cols.join(", ")}. Copy or download the JSON for everything.`));
+  },
   session(p, r) {
     const visits = r.visits || [];
     if (!visits.length) { p.append(h("div", { class: "empty" }, "No session data for this run (older run format).")); return; }
@@ -605,17 +649,23 @@ const RENDER = {
       h("table", {}, h("thead", {}, h("tr", {}, ["#", "URL", "Result", "Waited", "Fetch", "Attempts", "Browse"].map(c => h("th", {}, c)))),
         h("tbody", {}, visits.map((v, i) => h("tr", {},
           h("td", {}, i + 1), h("td", { class: "mono" }, v.url, v.skipped ? h("div", { class: "help", style: "color:var(--warn)" }, v.skipped) : null),
-          h("td", {}, pill(v)), h("td", {}, fmt(v.waited)), h("td", {}, fmt(v.fetch_seconds)), h("td", {}, v.attempts ?? ""),
+          h("td", {}, pill(v)), h("td", {}, fmt(v.waited)), h("td", {}, fmt(v.fetch_seconds), v.challenge_seconds != null ? h("div", { class: "help" }, `JS challenge ${v.challenge_seconds}s`) : null), h("td", {}, v.attempts ?? ""),
           h("td", {}, v.browse && Object.keys(v.browse).length
             ? `${v.browse.scrolls} scrolls · ${v.browse.mouse_moves} moves · read ${v.browse.read_seconds}s` : "—"))))));
     if (r.throttle_log?.length) p.append(h("h3", { style: "margin:18px 0 8px;font-size:13px" }, "Throttle decisions"),
       h("pre", { class: "block" }, r.throttle_log.join("\n")));
   },
   screenshot(p, r) {
-    if (!r.screenshot || !r.id) { p.append(h("div", { class: "empty" }, "No screenshot for this run.")); return; }
-    const src = `/runs/${r.id}/screenshot.png`;
-    p.append(h("div", { class: "toolbar" }, h("a", { href: src, target: "_blank" }, "Open full size ↗")),
-      h("img", { class: "shot", src, alt: `Screenshot of ${r.final_url || r.url}` }));
+    if ((!r.screenshot && !r.top_screenshot) || !r.id) { p.append(h("div", { class: "empty" }, "No screenshot for this run.")); return; }
+    const shot = (name, label, hint) => {
+      const src = `/runs/${r.id}/${name}.png`;
+      return h("div", { style: "margin-bottom:20px" },
+        h("div", { class: "toolbar" }, h("b", {}, label), h("span", { class: "muted" }, hint),
+          h("a", { href: src, target: "_blank" }, "Open full size ↗")),
+        h("img", { class: "shot", src, alt: `${label}: ${r.final_url || r.url}` }));
+    };
+    if (r.top_screenshot) p.append(shot("top", "At load", "top of the page, before any scrolling: banners show up here"));
+    if (r.screenshot) p.append(shot("screenshot", "At end", "after human browsing (scrolled)"));
   },
   extract(p, r) {
     if (!r.extract?.length) { p.append(h("div", { class: "empty" }, "No extraction rules. Add some in the Extract section.")); return; }
@@ -709,6 +759,19 @@ const RENDER = {
   },
 };
 
+/* ---------- Database summary ---------- */
+async function loadDb() {
+  const box = $("#dbBox");
+  let d;
+  try { d = await api("/api/db"); } catch { box.textContent = "Unavailable"; return; }
+  const kinds = Object.entries(d.kinds || {});
+  box.replaceChildren(
+    h("div", { class: "help", style: "color:var(--muted);margin-bottom:6px" }, (d.path || "").split("/").slice(-2).join("/")),
+    kinds.length ? h("div", {}, kinds.map(([k, n]) => h("div", {}, h("b", {}, n), ` ${k}`))) : h("div", { class: "help" }, "Empty. Tick “Save records” on a run."),
+    (d.subreddits || []).length ? h("div", { style: "margin-top:6px" }, d.subreddits.slice(0, 6).map(x =>
+      h("div", { class: "help" }, `r/${x.subreddit}: ${x.posts}`))) : null);
+}
+
 /* ---------- History ---------- */
 async function loadHistory() {
   let runs = [];
@@ -751,6 +814,7 @@ async function delRun(id) {
 async function init() {
   const data = await api("/api/schema");
   SECTIONS = data.sections; PRESETS = data.presets; PROFILES = data.profiles;
+  (data.extractors || []).forEach(x => $("#extractor").append(h("option", { value: x }, x)));
   for (const key of Object.keys(SECTIONS)) renderConfig(key);
   PRESETS.forEach((p, i) => $("#preset").append(h("option", { value: i }, p.name)));
   const saved = store.get();
@@ -768,12 +832,14 @@ async function init() {
   $("#runBtn").addEventListener("click", run);
   $("#previewBtn").addEventListener("click", preview);
   $("#refreshRuns").addEventListener("click", loadHistory);
+  $("#refreshDb").addEventListener("click", loadDb);
   $("#resetBtn").addEventListener("click", () => { setState({ ...DEFAULTS, ...PRESETS[0] }); toast("Form reset"); });
   document.addEventListener("keydown", e => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); run(); } });
 
   const st = await api("/api/status").catch(() => ({}));
   if (st.running) toast("A run is already in progress on the server");
   await loadHistory();
+  loadDb();
 }
 init().catch(e => toast(`Failed to load: ${e.message}`));
 </script>

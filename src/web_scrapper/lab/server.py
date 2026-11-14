@@ -14,7 +14,10 @@ from fastapi.responses import FileResponse
 
 from ..browser import build_launch_kwargs
 from ..config import HumanConfig, ThrottleConfig
+from ..extractors import EXTRACTORS
+from ..storage import SqliteStore
 from .runner import (
+    DB_PATH,
     PROJECT_ROOT,
     RUNS_DIR,
     ExtractRule,
@@ -49,7 +52,17 @@ PRESETS: list[dict[str, Any]] = [
         ],
     },
     {
-        "name": "reddit (new UI): r/python",
+        "name": "reddit (new UI): r/puzzles newest → Records",
+        "url": "https://www.reddit.com/r/puzzles/new/",
+        "wait_for": "selector",
+        "wait_selector": "shreddit-post",
+        "screenshot": True,
+        "extractor": "reddit_listing",
+        "save_records": True,
+        "extract": [],
+    },
+    {
+        "name": "reddit (new UI): r/python, raw selectors",
         "url": "https://www.reddit.com/r/python/",
         "wait_for": "selector",
         "wait_selector": "shreddit-post",
@@ -122,6 +135,9 @@ def _parse_run_request(body: dict[str, Any]) -> RunRequest:
     for u in extra_urls:
         if not re.match(r"^https?://", u):
             raise HTTPException(400, f"Extra URL must start with http(s)://: {u}")
+    extractor = str(body.get("extractor") or "")
+    if extractor and extractor not in EXTRACTORS:
+        raise HTTPException(400, f"Unknown extractor {extractor!r}; known: {sorted(EXTRACTORS)}")
     rules = [
         ExtractRule(
             name=str(r.get("name") or r.get("selector")),
@@ -148,6 +164,8 @@ def _parse_run_request(body: dict[str, Any]) -> RunRequest:
         full_page=bool(body.get("full_page", False)),
         extract=rules,
         js=str(body.get("js") or ""),
+        extractor=extractor,
+        save_records=bool(body.get("save_records")) and bool(extractor),
     )
 
 
@@ -163,7 +181,12 @@ async def schema():
         if PROFILES_DIR.exists()
         else []
     )
-    return {"sections": all_schemas(), "presets": PRESETS, "profiles": profiles}
+    return {
+        "sections": all_schemas(),
+        "presets": PRESETS,
+        "profiles": profiles,
+        "extractors": sorted(EXTRACTORS),
+    }
 
 
 @app.post("/api/preview")
@@ -184,6 +207,14 @@ async def run(request: Request):
     req = _parse_run_request(body)
     async with _run_lock:
         return await run_experiment(req, body)
+
+
+@app.get("/api/db")
+async def db_summary():
+    if not DB_PATH.exists():
+        return {"path": str(DB_PATH), "kinds": {}, "subreddits": [], "runs": []}
+    with SqliteStore(DB_PATH) as store:
+        return store.summary()
 
 
 @app.get("/api/status")
@@ -213,10 +244,12 @@ async def remove_run(run_id: str):
     return {"deleted": run_id}
 
 
-@app.get("/runs/{run_id}/screenshot.png")
-async def screenshot(run_id: str):
+@app.get("/runs/{run_id}/{name}.png")
+async def screenshot(run_id: str, name: str):
     _check_id(run_id)
-    path = RUNS_DIR / run_id / "screenshot.png"
+    if name not in ("screenshot", "top"):
+        raise HTTPException(404)
+    path = RUNS_DIR / run_id / f"{name}.png"
     if not path.exists():
         raise HTTPException(404)
     return FileResponse(path)
