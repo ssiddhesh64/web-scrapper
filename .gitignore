@@ -14,3 +14,12 @@ __pycache__/
 *.db-journal
 *.db-wal
 *.db-shm
+
+# Scraper output
+output/
+
+# Browser profiles (cookies, storage)
+profiles/
+
+# docs
+docs/

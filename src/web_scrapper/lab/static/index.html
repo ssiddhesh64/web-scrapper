@@ -1,0 +1,741 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scraper Lab</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --panel-2: #f1f3f6; --border: #e1e4ea;
+  --text: #1b1f27; --muted: #667085; --accent: #3b5bdb; --accent-text: #fff;
+  --ok: #1a7f4b; --ok-bg: #e3f5eb; --warn: #9a6100; --warn-bg: #fdf1dc;
+  --bad: #c0362c; --bad-bg: #fbe5e3; --info: #2457a6; --info-bg: #e4edfb;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --radius: 8px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111318; --panel: #181b22; --panel-2: #1f232c; --border: #2b303b;
+    --text: #e6e8ee; --muted: #8b93a5; --accent: #6d8cff; --accent-text: #0d1020;
+    --ok: #4cc38a; --ok-bg: #16301f; --warn: #f0b45a; --warn-bg: #33270f;
+    --bad: #ff7b72; --bad-bg: #3a1a18; --info: #7fb0ff; --info-bg: #182640;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+button, input, select, textarea { font: inherit; color: inherit; }
+input, select, textarea {
+  width: 100%; background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+  padding: 6px 8px; min-width: 0;
+}
+textarea { font-family: var(--mono); font-size: 12.5px; resize: vertical; }
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+input[type=checkbox] { width: auto; accent-color: var(--accent); }
+button {
+  border: 1px solid var(--border); background: var(--panel); border-radius: 6px;
+  padding: 6px 12px; cursor: pointer;
+}
+button:hover { background: var(--panel-2); }
+button.primary { background: var(--accent); color: var(--accent-text); border-color: transparent; font-weight: 600; }
+button.primary:hover { filter: brightness(1.08); }
+button.primary:disabled { opacity: .6; cursor: progress; }
+button.ghost { border-color: transparent; background: transparent; color: var(--muted); padding: 4px 8px; }
+button.ghost:hover { color: var(--text); background: var(--panel-2); }
+code, pre { font-family: var(--mono); font-size: 12.5px; }
+
+header {
+  height: 56px; display: flex; align-items: center; gap: 12px; padding: 0 16px;
+  background: var(--panel); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 5;
+}
+header h1 { font-size: 16px; margin: 0; font-weight: 700; letter-spacing: -.01em; }
+header .sub { color: var(--muted); font-size: 12.5px; }
+header .spacer { flex: 1; }
+.runstate { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.dot.running { background: var(--accent); animation: pulse 1s infinite; }
+@keyframes pulse { 50% { opacity: .3; } }
+kbd { font-family: var(--mono); font-size: 11px; border: 1px solid currentColor; border-radius: 4px; padding: 0 4px; opacity: .75; margin-left: 6px; }
+
+.layout { display: grid; grid-template-columns: 380px minmax(0, 1fr) 270px; height: calc(100vh - 56px); }
+.col { overflow: auto; }
+.form-col { border-right: 1px solid var(--border); padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.history-col { border-left: 1px solid var(--border); padding: 12px; }
+.results-col { padding: 16px 20px; }
+
+details.card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); }
+details.card > summary {
+  list-style: none; cursor: pointer; padding: 10px 12px; font-weight: 600; display: flex; align-items: center; gap: 8px;
+}
+details.card > summary::-webkit-details-marker { display: none; }
+details.card > summary::before { content: "▸"; color: var(--muted); transition: transform .15s; }
+details.card[open] > summary::before { transform: rotate(90deg); }
+details.card > summary .hint { font-weight: 400; color: var(--muted); font-size: 12px; margin-left: auto; }
+.card-body { padding: 0 12px 12px; display: flex; flex-direction: column; gap: 10px; }
+.field label, .field .label { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; margin-bottom: 4px; }
+.field .help { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+.field code.name { font-weight: 500; color: var(--muted); font-size: 11.5px; }
+.row { display: flex; gap: 8px; align-items: center; }
+.row > * { flex: 1; }
+.check { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.group { border: 1px dashed var(--border); border-radius: 6px; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+.rules { display: flex; flex-direction: column; gap: 6px; }
+.rule { display: grid; grid-template-columns: 1fr 1.6fr 1fr auto; gap: 6px; }
+.rule-head { display: grid; grid-template-columns: 1fr 1.6fr 1fr 28px; gap: 6px; font-size: 11.5px; color: var(--muted); }
+.form-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.empty { color: var(--muted); text-align: center; padding: 80px 20px; }
+.empty h2 { color: var(--text); font-size: 18px; margin-bottom: 6px; }
+.summary-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+.summary-bar .url { font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; }
+.pill { display: inline-flex; align-items: center; gap: 4px; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.pill.ok { color: var(--ok); background: var(--ok-bg); }
+.pill.warn { color: var(--warn); background: var(--warn-bg); }
+.pill.bad { color: var(--bad); background: var(--bad-bg); }
+.pill.info { color: var(--info); background: var(--info-bg); }
+.pill.muted { color: var(--muted); background: var(--panel-2); }
+
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin-bottom: 14px; overflow-x: auto; }
+.tab { border: none; background: none; border-bottom: 2px solid transparent; border-radius: 0; padding: 8px 12px; color: var(--muted); white-space: nowrap; }
+.tab:hover { background: none; color: var(--text); }
+.tab.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+.tab .count { font-size: 11px; color: var(--muted); margin-left: 4px; }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.box { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; }
+.box h3 { margin: 0 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; font-size: 13px; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; overflow-wrap: anywhere; font-family: var(--mono); font-size: 12.5px; }
+.signal { padding: 8px 10px; border-radius: 6px; margin-bottom: 6px; font-size: 13px; }
+.signal.bad { background: var(--bad-bg); color: var(--bad); }
+.signal.warn { background: var(--warn-bg); color: var(--warn); }
+.signal.ok { background: var(--ok-bg); color: var(--ok); }
+.bars { display: flex; flex-direction: column; gap: 6px; }
+.bar-row { display: grid; grid-template-columns: 80px 1fr 52px; gap: 8px; align-items: center; font-size: 12.5px; }
+.bar-row .track { height: 8px; background: var(--panel-2); border-radius: 4px; overflow: hidden; }
+.bar-row .fill { height: 100%; background: var(--accent); border-radius: 4px; }
+.bar-row .v { text-align: right; font-family: var(--mono); color: var(--muted); }
+pre.block {
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 12px; margin: 0; overflow: auto; max-height: 70vh; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; position: sticky; top: 0; background: var(--bg); }
+td.mono { font-family: var(--mono); overflow-wrap: anywhere; }
+.toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+.toolbar input[type=search] { max-width: 320px; }
+.toolbar .muted { color: var(--muted); font-size: 12.5px; }
+.shot { max-width: 100%; border: 1px solid var(--border); border-radius: var(--radius); display: block; }
+.extract-block { margin-bottom: 16px; }
+.extract-block h4 { margin: 0 0 6px; font-size: 14px; display: flex; align-items: center; gap: 8px; }
+.extract-block h4 code { font-weight: 400; color: var(--muted); font-size: 12px; }
+
+.history-col h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 4px 0 10px; display: flex; align-items: center; }
+.history-col h2 button { margin-left: auto; }
+.hist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.hist li {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; cursor: pointer;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.hist li:hover { border-color: var(--accent); }
+.hist li.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.hist .top { display: flex; align-items: center; gap: 6px; }
+.hist .top .time { margin-left: auto; color: var(--muted); font-size: 11.5px; }
+.hist .u { font-family: var(--mono); font-size: 11.5px; overflow-wrap: anywhere; color: var(--text); }
+.hist .acts { display: flex; gap: 4px; }
+.hist .acts button { font-size: 11.5px; padding: 2px 6px; }
+.toast {
+  position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg);
+  padding: 8px 14px; border-radius: 6px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 10;
+}
+.toast.show { opacity: 1; }
+
+@media (max-width: 1100px) {
+  .layout { grid-template-columns: 340px minmax(0, 1fr); }
+  .history-col { grid-column: 1 / -1; border-left: none; border-top: 1px solid var(--border); }
+  .layout { height: auto; }
+  .col { overflow: visible; }
+}
+@media (max-width: 760px) {
+  .layout { grid-template-columns: 1fr; }
+  .form-col { border-right: none; border-bottom: 1px solid var(--border); }
+  .results-col { padding: 16px; }
+  header .sub { display: none; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>Scraper Lab</h1>
+  <span class="sub">Camoufox experiments · form generated from <code>BrowserConfig</code></span>
+  <span class="spacer"></span>
+  <span class="runstate"><span class="dot" id="dot"></span><span id="runstate">Idle</span></span>
+  <button id="previewBtn" title="Show the exact kwargs Camoufox will receive, without launching">Preview launch</button>
+  <button class="primary" id="runBtn">Run<kbd>⌘↵</kbd></button>
+</header>
+
+<div class="layout">
+  <aside class="col form-col" id="form">
+    <details class="card" open>
+      <summary>Target</summary>
+      <div class="card-body">
+        <div class="field">
+          <label for="preset">Preset</label>
+          <select id="preset"><option value="">Choose a preset…</option></select>
+          <div class="help">Fills URL, waits and extraction rules. Browser config is kept.</div>
+        </div>
+        <div class="field">
+          <label for="url">URL</label>
+          <input id="url" type="url" placeholder="https://old.reddit.com/r/python/" spellcheck="false">
+        </div>
+      </div>
+    </details>
+
+    <details class="card" open>
+      <summary>Browser config <span class="hint">config.py</span></summary>
+      <div class="card-body" id="configFields"></div>
+    </details>
+
+    <details class="card">
+      <summary>Page load &amp; behaviour</summary>
+      <div class="card-body">
+        <div class="field">
+          <label for="wait_until">goto wait_until</label>
+          <select id="wait_until">
+            <option>commit</option><option selected>domcontentloaded</option><option>load</option><option>networkidle</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="wait_for">Then wait for</label>
+          <select id="wait_for">
+            <option value="networkidle">network idle</option>
+            <option value="selector">a CSS selector</option>
+            <option value="none">nothing</option>
+          </select>
+        </div>
+        <div class="field" id="waitSelectorField">
+          <label for="wait_selector">Wait selector</label>
+          <input id="wait_selector" placeholder="shreddit-post" spellcheck="false">
+        </div>
+        <div class="row">
+          <div class="field"><label for="timeout_ms">Timeout ms</label><input id="timeout_ms" type="number" min="1000" step="1000" value="30000"></div>
+          <div class="field"><label for="settle_ms">Extra settle ms</label><input id="settle_ms" type="number" min="0" step="500" value="0"></div>
+        </div>
+        <div class="field">
+          <label for="scrolls">Human scrolls</label>
+          <input id="scrolls" type="number" min="0" max="50" value="0">
+          <div class="help">Mouse-wheel scrolls with random distance and pauses (loads infinite feeds).</div>
+        </div>
+        <label class="check"><input type="checkbox" id="screenshot" checked> Take screenshot</label>
+        <label class="check"><input type="checkbox" id="full_page"> Full-page screenshot</label>
+      </div>
+    </details>
+
+    <details class="card" open>
+      <summary>Extract <span class="hint">CSS selectors</span></summary>
+      <div class="card-body">
+        <div class="rule-head"><span>Name</span><span>Selector</span><span>Attribute</span><span></span></div>
+        <div class="rules" id="rules"></div>
+        <div class="help" style="font-size:11.5px;color:var(--muted)">Attribute: empty = text, <code>html</code> = innerHTML, or an attribute name like <code>href</code>.</div>
+        <div><button id="addRule">+ Add rule</button></div>
+      </div>
+    </details>
+
+    <details class="card">
+      <summary>Run JavaScript <span class="hint">isolated world</span></summary>
+      <div class="card-body">
+        <textarea id="js" rows="5" spellcheck="false" placeholder="document.querySelectorAll('a').length"></textarea>
+        <div class="help" style="font-size:11.5px;color:var(--muted)">An expression or <code>() =&gt; …</code>. Runs after the page is ready; the result must be JSON-serialisable. Invisible to the page.</div>
+      </div>
+    </details>
+
+    <div class="form-actions">
+      <button id="resetBtn" class="ghost">Reset form to defaults</button>
+    </div>
+  </aside>
+
+  <main class="col results-col" id="results">
+    <div class="empty">
+      <h2>No run selected</h2>
+      <p>Pick a preset or enter a URL, then press <b>Run</b> (⌘↵ / Ctrl↵).<br>
+      Every run is saved under <code>output/runs/</code> and listed on the right.</p>
+    </div>
+  </main>
+
+  <aside class="col history-col">
+    <h2>Runs <button class="ghost" id="refreshRuns" title="Refresh">↻</button></h2>
+    <ul class="hist" id="history"></ul>
+  </aside>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+const STORE_KEY = "scraperLab.form.v1";
+let SCHEMA = [], PRESETS = [], PROFILES = [];
+let current = null, activeTab = "overview", running = false, timer = null;
+
+function h(tag, attrs = {}, ...children) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k === "class") el.className = v;
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else if (k === "text") el.textContent = v;
+    else el.setAttribute(k, v === true ? "" : v);
+  }
+  for (const c of children.flat()) {
+    if (c == null || c === false) continue;
+    el.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  }
+  return el;
+}
+function toast(msg) {
+  const t = $("#toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), 2200);
+}
+async function api(path, opts = {}) {
+  const r = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opts });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
+  return data;
+}
+const store = {
+  get() { try { return JSON.parse(localStorage.getItem(STORE_KEY)); } catch { return null; } },
+  set(v) { try { localStorage.setItem(STORE_KEY, JSON.stringify(v)); } catch {} },
+};
+
+/* ---------- Browser config form, generated from the BrowserConfig schema ---------- */
+function optLabel(v) { return v === null ? "auto" : String(v); }
+
+function renderConfig() {
+  const root = $("#configFields"); root.replaceChildren();
+  for (const f of SCHEMA) {
+    const id = `cfg-${f.name}`;
+    let control;
+    switch (f.kind) {
+      case "bool":
+        control = h("label", { class: "check" }, h("input", { type: "checkbox", id }), "enabled");
+        break;
+      case "choice":
+        control = h("select", { id }, f.options.map(o => h("option", { value: JSON.stringify(o) }, optLabel(o))));
+        break;
+      case "boolnum":
+        control = h("input", { id, placeholder: "true | false | seconds", spellcheck: "false" });
+        break;
+      case "number":
+        control = h("input", { id, type: "number" });
+        break;
+      case "ints":
+        control = h("div", { class: "row" },
+          Array.from({ length: f.length }, (_, i) => h("input", { id: `${id}-${i}`, type: "number" })));
+        break;
+      case "group":
+        control = h("div", { class: "group" }, f.fields.map(sf =>
+          h("input", { id: `${id}-${sf.name}`, placeholder: sf.name, type: sf.secret ? "password" : "text",
+                       autocomplete: "off", spellcheck: "false" })));
+        break;
+      case "json":
+        control = h("textarea", { id, rows: 2, spellcheck: "false" });
+        break;
+      default: {
+        control = h("input", { id, spellcheck: "false", list: f.name === "profile_dir" ? "profilesList" : null });
+      }
+    }
+    root.append(h("div", { class: "field" },
+      h("label", { for: id }, f.name.replace(/_/g, " "), h("code", { class: "name" }, f.name)),
+      control,
+      f.help ? h("div", { class: "help" }, f.help) : null));
+  }
+  root.append(h("datalist", { id: "profilesList" }, PROFILES.map(p => h("option", { value: p }))));
+}
+
+function getConfig() {
+  const cfg = {};
+  for (const f of SCHEMA) {
+    const id = `cfg-${f.name}`;
+    switch (f.kind) {
+      case "bool": cfg[f.name] = $(`#${id}`).checked; break;
+      case "choice": cfg[f.name] = JSON.parse($(`#${id}`).value); break;
+      case "boolnum": {
+        const v = $(`#${id}`).value.trim().toLowerCase();
+        cfg[f.name] = v === "" || v === "false" ? false : v === "true" ? true : Number(v);
+        if (Number.isNaN(cfg[f.name])) throw new Error(`${f.name}: use true, false or a number`);
+        break;
+      }
+      case "number": cfg[f.name] = Number($(`#${id}`).value); break;
+      case "ints": cfg[f.name] = Array.from({ length: f.length }, (_, i) => Number($(`#${id}-${i}`).value)); break;
+      case "group": {
+        const g = {}; for (const sf of f.fields) g[sf.name] = $(`#${id}-${sf.name}`).value.trim();
+        cfg[f.name] = g; break;
+      }
+      case "json": {
+        const raw = $(`#${id}`).value.trim();
+        try { cfg[f.name] = raw ? JSON.parse(raw) : {}; }
+        catch { throw new Error(`${f.name}: invalid JSON`); }
+        break;
+      }
+      default: cfg[f.name] = $(`#${id}`).value.trim();
+    }
+  }
+  return cfg;
+}
+
+function setConfig(cfg = {}) {
+  for (const f of SCHEMA) {
+    const id = `cfg-${f.name}`;
+    const v = f.name in cfg ? cfg[f.name] : f.default;
+    switch (f.kind) {
+      case "bool": $(`#${id}`).checked = !!v; break;
+      case "choice": {
+        const sel = $(`#${id}`), want = JSON.stringify(v ?? null);
+        sel.value = [...sel.options].some(o => o.value === want) ? want : JSON.stringify(f.default ?? null);
+        break;
+      }
+      case "boolnum": $(`#${id}`).value = String(v ?? ""); break;
+      case "ints": (v || []).forEach((n, i) => { const el = $(`#${id}-${i}`); if (el) el.value = n; }); break;
+      case "group": for (const sf of f.fields) {
+        const val = (v || {})[sf.name];
+        $(`#${id}-${sf.name}`).value = val && val !== "••••••" ? val : "";
+      } break;
+      case "json": $(`#${id}`).value = v && Object.keys(v).length ? JSON.stringify(v) : ""; break;
+      default: $(`#${id}`).value = v ?? "";
+    }
+  }
+}
+
+/* ---------- Extract rules ---------- */
+function addRule(rule = { name: "", selector: "", attr: "" }) {
+  const row = h("div", { class: "rule" },
+    h("input", { placeholder: "titles", value: rule.name || "", "data-k": "name", spellcheck: "false" }),
+    h("input", { placeholder: "a.title", value: rule.selector || "", "data-k": "selector", spellcheck: "false" }),
+    h("input", { placeholder: "text", value: rule.attr || "", "data-k": "attr", spellcheck: "false" }),
+    h("button", { class: "ghost", title: "Remove", onclick: () => { row.remove(); save(); } }, "✕"));
+  row.addEventListener("input", save);
+  $("#rules").append(row);
+}
+function getRules() {
+  return [...$("#rules").children].map(r => Object.fromEntries(
+    [...r.querySelectorAll("input")].map(i => [i.dataset.k, i.value.trim()]))).filter(r => r.selector);
+}
+function setRules(rules = []) { $("#rules").replaceChildren(); rules.forEach(addRule); if (!rules.length) addRule(); }
+
+/* ---------- Whole form state ---------- */
+const SIMPLE = ["url", "wait_until", "wait_for", "wait_selector", "timeout_ms", "settle_ms", "scrolls", "js"];
+const DEFAULTS = { url: "", wait_until: "domcontentloaded", wait_for: "networkidle", wait_selector: "",
+  timeout_ms: 30000, settle_ms: 0, scrolls: 0, screenshot: true, full_page: false, extract: [], js: "" };
+
+function getState() {
+  const s = {};
+  for (const k of SIMPLE) s[k] = $(`#${k}`).value;
+  for (const k of ["timeout_ms", "settle_ms", "scrolls"]) s[k] = Number(s[k]) || 0;
+  s.screenshot = $("#screenshot").checked; s.full_page = $("#full_page").checked;
+  s.extract = getRules(); s.config = getConfig();
+  return s;
+}
+function setState(s = {}, { keepConfig = false } = {}) {
+  const v = { ...DEFAULTS, ...s };
+  for (const k of SIMPLE) $(`#${k}`).value = v[k] ?? "";
+  $("#screenshot").checked = !!v.screenshot; $("#full_page").checked = !!v.full_page;
+  setRules(v.extract);
+  if (!keepConfig) setConfig(s.config || {});
+  syncWaitSelector(); save();
+}
+function save() { try { store.set(getState()); } catch {} }
+function syncWaitSelector() { $("#waitSelectorField").style.display = $("#wait_for").value === "selector" ? "" : "none"; }
+
+/* ---------- Running ---------- */
+function setRunning(on) {
+  running = on;
+  $("#runBtn").disabled = on; $("#dot").classList.toggle("running", on);
+  clearInterval(timer);
+  if (on) {
+    const t0 = Date.now();
+    const tick = () => $("#runstate").textContent = `Running… ${((Date.now() - t0) / 1000).toFixed(0)}s`;
+    tick(); timer = setInterval(tick, 500);
+  } else $("#runstate").textContent = "Idle";
+}
+async function run() {
+  if (running) return;
+  let body;
+  try { body = getState(); } catch (e) { toast(e.message); return; }
+  if (!body.url) { toast("Enter a URL first"); $("#url").focus(); return; }
+  save(); setRunning(true);
+  try {
+    const result = await api("/api/run", { method: "POST", body: JSON.stringify(body) });
+    current = { result, request: body };
+    renderResult(); loadHistory();
+  } catch (e) {
+    toast(e.message);
+  } finally { setRunning(false); }
+}
+async function preview() {
+  try {
+    const data = await api("/api/preview", { method: "POST", body: JSON.stringify({ config: getConfig() }) });
+    current = current || { result: { id: null, url: "(preview only, not launched)", timings: {} }, request: {} };
+    current.preview = data.launch_kwargs; activeTab = "launch"; renderResult();
+  } catch (e) { toast(e.message); }
+}
+
+/* ---------- Results ---------- */
+function statusPill(r) {
+  if (r.error) return h("span", { class: "pill bad" }, "Error");
+  if (r.status == null) return h("span", { class: "pill muted" }, "—");
+  const cls = r.status < 300 ? "ok" : r.status < 400 ? "info" : "bad";
+  return h("span", { class: `pill ${cls}` }, `HTTP ${r.status}`);
+}
+function verdictPill(r) {
+  if (r.error) return null;
+  if (r.block_signals?.length) return h("span", { class: "pill warn" }, `⚠ ${r.block_signals.length} block signal${r.block_signals.length > 1 ? "s" : ""}`);
+  if (r.ok) return h("span", { class: "pill ok" }, "✓ Looks clean");
+  return null;
+}
+
+const TABS = [
+  ["overview", "Overview"], ["screenshot", "Screenshot"], ["extract", "Extract"], ["text", "Text"],
+  ["html", "HTML"], ["network", "Network"], ["console", "Console"], ["cookies", "Cookies"],
+  ["launch", "Launch config"], ["js", "JS"], ["raw", "Raw JSON"],
+];
+function tabCount(key, r) {
+  switch (key) {
+    case "extract": return r.extract?.length ? r.extract.reduce((a, e) => a + (e.count || 0), 0) : null;
+    case "network": return r.network?.length || null;
+    case "console": return r.console?.length || null;
+    case "cookies": return r.cookies?.length || null;
+    default: return null;
+  }
+}
+
+function renderResult() {
+  const root = $("#results"); root.replaceChildren();
+  if (!current) return;
+  const r = current.result;
+  root.append(h("div", { class: "summary-bar" },
+    statusPill(r), verdictPill(r),
+    h("span", { class: "url" }, r.final_url || r.url),
+    r.timings?.total != null ? h("span", { class: "pill muted" }, `${r.timings.total}s`) : null,
+    r.id ? h("span", { class: "pill muted" }, r.id) : null));
+
+  const tabs = h("div", { class: "tabs", role: "tablist" });
+  for (const [key, label] of TABS) {
+    const c = tabCount(key, r);
+    tabs.append(h("button", { class: `tab ${key === activeTab ? "active" : ""}`, role: "tab",
+      onclick: () => { activeTab = key; renderResult(); } }, label, c != null ? h("span", { class: "count" }, c) : null));
+  }
+  root.append(tabs);
+  const panel = h("div", { role: "tabpanel" });
+  root.append(panel);
+  (RENDER[activeTab] || RENDER.overview)(panel, r);
+}
+
+function copyBtn(getText, label = "Copy") {
+  return h("button", { onclick: async () => {
+    try { await navigator.clipboard.writeText(getText()); toast("Copied"); } catch { toast("Copy failed"); }
+  } }, label);
+}
+function kv(obj) {
+  return h("dl", { class: "kv" }, Object.entries(obj).filter(([, v]) => v != null && v !== "")
+    .flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, typeof v === "object" ? JSON.stringify(v) : String(v))]));
+}
+
+const RENDER = {
+  overview(p, r) {
+    const signals = h("div", { class: "box" }, h("h3", {}, "Bot-detection signals"));
+    if (r.error) signals.append(h("div", { class: "signal bad" }, r.error));
+    (r.block_signals || []).forEach(s => signals.append(h("div", { class: "signal bad" }, s)));
+    (r.warnings || []).forEach(s => signals.append(h("div", { class: "signal warn" }, s)));
+    if (!r.error && !r.block_signals?.length) signals.append(h("div", { class: "signal ok" }, "No block signals detected (heuristic: status codes, captcha/block phrases, login redirects)."));
+
+    const page = h("div", { class: "box" }, h("h3", {}, "Page"), kv({
+      "Final URL": r.final_url, "Title": r.title, "Browser": r.browser_version,
+      "HTML": r.html_chars != null ? `${r.html_chars.toLocaleString()} chars` : null,
+      "Text": r.text_chars != null ? `${r.text_chars.toLocaleString()} chars` : null,
+      "Responses": r.network_summary?.responses, "HTTP ≥400": r.network_summary?.errors,
+      "Failed requests": r.network_summary?.failed, "Cookies": r.cookies?.length, "Started": r.started_at,
+    }));
+
+    const t = r.timings || {}, total = t.total || 1;
+    const timing = h("div", { class: "box" }, h("h3", {}, "Timings"),
+      h("div", { class: "bars" }, [["launched", "Launch"], ["loaded", "goto"], ["ready", "Wait/scroll"], ["extracted", "Extract"], ["end", "Shot+close"]]
+        .filter(([k]) => t[k] != null)
+        .map(([k, label]) => h("div", { class: "bar-row" }, h("span", {}, label),
+          h("div", { class: "track" }, h("div", { class: "fill", style: `width:${Math.max(2, (t[k] / total) * 100)}%` })),
+          h("span", { class: "v" }, `${t[k]}s`)))));
+
+    const idBox = h("div", { class: "box" }, h("h3", {}, "Identity the page sees"),
+      r.identity ? kv(r.identity) : h("div", { class: "help" }, "Not captured."),
+      h("div", { class: "help", style: "margin-top:8px" }, "Check these agree with each other (OS ↔ platform, timezone/locale ↔ proxy country)."));
+
+    p.append(h("div", { class: "grid" }, signals, page, timing, idBox));
+    if (r.traceback) p.append(h("h3", { style: "margin:16px 0 8px" }, "Traceback"), h("pre", { class: "block" }, r.traceback));
+  },
+  screenshot(p, r) {
+    if (!r.screenshot || !r.id) { p.append(h("div", { class: "empty" }, "No screenshot for this run.")); return; }
+    const src = `/runs/${r.id}/screenshot.png`;
+    p.append(h("div", { class: "toolbar" }, h("a", { href: src, target: "_blank" }, "Open full size ↗")),
+      h("img", { class: "shot", src, alt: `Screenshot of ${r.final_url || r.url}` }));
+  },
+  extract(p, r) {
+    if (!r.extract?.length) { p.append(h("div", { class: "empty" }, "No extraction rules. Add some in the Extract section.")); return; }
+    p.append(h("div", { class: "toolbar" }, copyBtn(() => JSON.stringify(
+      Object.fromEntries(r.extract.map(e => [e.name, e.values || []])), null, 2), "Copy all as JSON")));
+    for (const e of r.extract) {
+      const head = h("h4", {}, e.name, h("code", {}, `${e.selector}${e.attr ? ` @${e.attr}` : ""}`),
+        e.error ? h("span", { class: "pill bad" }, "error") :
+          h("span", { class: `pill ${e.count ? "ok" : "warn"}` }, `${e.count} match${e.count === 1 ? "" : "es"}`));
+      const block = h("div", { class: "extract-block" }, head);
+      if (e.error) block.append(h("div", { class: "signal bad" }, e.error));
+      else if (e.values?.length) block.append(h("table", {},
+        h("thead", {}, h("tr", {}, h("th", { style: "width:44px" }, "#"), h("th", {}, "Value"))),
+        h("tbody", {}, e.values.map((v, i) => h("tr", {}, h("td", {}, i + 1), h("td", { class: "mono" }, v ?? "(null)"))))));
+      p.append(block);
+    }
+  },
+  text(p, r) {
+    const pre = h("pre", { class: "block" }, r.text || "(no text)");
+    const search = h("input", { type: "search", placeholder: "Find in text…", oninput: e => {
+      const q = e.target.value.toLowerCase();
+      const n = q ? (r.text || "").toLowerCase().split(q).length - 1 : null;
+      $("#textHits").textContent = n == null ? "" : `${n} hit${n === 1 ? "" : "s"}`;
+    } });
+    p.append(h("div", { class: "toolbar" }, search, h("span", { class: "muted", id: "textHits" }),
+      copyBtn(() => r.text || ""),
+      r.text_chars > (r.text?.length || 0) ? h("span", { class: "muted" }, `showing first ${r.text.length.toLocaleString()} of ${r.text_chars.toLocaleString()} chars`) : null), pre);
+  },
+  async html(p, r) {
+    if (!r.id || r.html_chars == null) { p.append(h("div", { class: "empty" }, "No HTML saved for this run.")); return; }
+    const src = `/runs/${r.id}/page.html`;
+    const pre = h("pre", { class: "block" }, "Loading…");
+    p.append(h("div", { class: "toolbar" },
+      h("a", { href: src, target: "_blank" }, "Open rendered (scripts disabled) ↗"),
+      h("a", { href: `${src}?download=true` }, "Download"),
+      h("span", { class: "muted" }, `${r.html_chars.toLocaleString()} chars`)), pre);
+    const txt = await (await fetch(src)).text();
+    pre.textContent = txt.length > 400000 ? txt.slice(0, 400000) + "\n\n… truncated (download for the full file)" : txt;
+  },
+  network(p, r) {
+    const rows = r.network || [];
+    const tbody = h("tbody");
+    const draw = () => {
+      const q = $("#netq").value.toLowerCase(), onlyBad = $("#netbad").checked, type = $("#nettype").value;
+      const list = rows.filter(n => (!q || n.url.toLowerCase().includes(q))
+        && (!onlyBad || n.status === "failed" || n.status >= 400) && (!type || n.type === type));
+      tbody.replaceChildren(...list.map(n => h("tr", {},
+        h("td", {}, h("span", { class: `pill ${n.status === "failed" || n.status >= 400 ? "bad" : n.status >= 300 ? "info" : "ok"}` }, String(n.status))),
+        h("td", {}, n.method), h("td", {}, n.type), h("td", { class: "mono" }, n.url, n.error ? ` — ${n.error}` : ""))));
+      $("#netcount").textContent = `${list.length} of ${rows.length}`;
+    };
+    const types = [...new Set(rows.map(n => n.type))].sort();
+    p.append(h("div", { class: "toolbar" },
+      h("input", { type: "search", id: "netq", placeholder: "Filter URL…", oninput: draw }),
+      h("select", { id: "nettype", style: "width:auto", onchange: draw }, h("option", { value: "" }, "all types"), types.map(t => h("option", { value: t }, t))),
+      h("label", { class: "check" }, h("input", { type: "checkbox", id: "netbad", onchange: draw }), "failed / ≥400 only"),
+      h("span", { class: "muted", id: "netcount" })),
+      h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "Status"), h("th", {}, "Method"), h("th", {}, "Type"), h("th", {}, "URL"))), tbody));
+    draw();
+  },
+  console(p, r) {
+    if (!r.console?.length) { p.append(h("div", { class: "empty" }, "No console messages.")); return; }
+    p.append(h("table", {}, h("thead", {}, h("tr", {}, h("th", { style: "width:90px" }, "Type"), h("th", {}, "Message"))),
+      h("tbody", {}, r.console.map(m => h("tr", {}, h("td", {}, h("span", { class: `pill ${m.type === "error" ? "bad" : m.type === "warning" ? "warn" : "muted"}` }, m.type)), h("td", { class: "mono" }, m.text))))));
+  },
+  cookies(p, r) {
+    if (!r.cookies?.length) { p.append(h("div", { class: "empty" }, "No cookies were set.")); return; }
+    p.append(h("div", { class: "help", style: "margin-bottom:8px;color:var(--muted)" }, "Values are hidden on purpose. Use a persistent profile to keep these between runs."),
+      h("table", {}, h("thead", {}, h("tr", {}, ["Name", "Domain", "Path", "Expires", "HttpOnly", "Secure"].map(c => h("th", {}, c)))),
+        h("tbody", {}, r.cookies.map(c => h("tr", {}, h("td", { class: "mono" }, c.name), h("td", { class: "mono" }, c.domain), h("td", {}, c.path),
+          h("td", {}, c.expires > 0 ? new Date(c.expires * 1000).toLocaleString() : "session"), h("td", {}, c.httpOnly ? "✓" : ""), h("td", {}, c.secure ? "✓" : ""))))));
+  },
+  launch(p, r) {
+    if (current.preview) p.append(h("h3", { style: "margin:0 0 8px" }, "Preview (current form, not launched)"),
+      h("pre", { class: "block", style: "margin-bottom:16px" }, JSON.stringify(current.preview, null, 2)));
+    if (r.launch_kwargs) p.append(h("h3", { style: "margin:0 0 8px" }, "Used for this run"),
+      h("pre", { class: "block" }, JSON.stringify(r.launch_kwargs, null, 2)));
+    if (!current.preview && !r.launch_kwargs) p.append(h("div", { class: "empty" }, "Nothing to show."));
+  },
+  js(p, r) {
+    if (r.js_error) p.append(h("div", { class: "signal bad" }, r.js_error));
+    else if ("js_result" in r) p.append(h("div", { class: "toolbar" }, copyBtn(() => JSON.stringify(r.js_result, null, 2))),
+      h("pre", { class: "block" }, JSON.stringify(r.js_result, null, 2)));
+    else p.append(h("div", { class: "empty" }, "No JavaScript was run."));
+  },
+  raw(p, r) {
+    const { text, network, ...rest } = r;
+    p.append(h("div", { class: "toolbar" }, copyBtn(() => JSON.stringify(r, null, 2), "Copy full JSON"),
+      h("span", { class: "muted" }, "text and network omitted below for readability")),
+      h("pre", { class: "block" }, JSON.stringify(rest, null, 2)));
+  },
+};
+
+/* ---------- History ---------- */
+async function loadHistory() {
+  let runs = [];
+  try { runs = await api("/api/runs"); } catch { return; }
+  const ul = $("#history"); ul.replaceChildren();
+  if (!runs.length) { ul.append(h("li", { style: "cursor:default;color:var(--muted)" }, "No runs yet.")); return; }
+  for (const item of runs) {
+    let u; try { const x = new URL(item.url); u = x.host + x.pathname; } catch { u = item.url; }
+    const pill = item.error ? h("span", { class: "pill bad" }, "error")
+      : h("span", { class: `pill ${item.ok ? (item.blocked ? "warn" : "ok") : "bad"}` }, item.status ?? "—");
+    const li = h("li", { class: current?.result?.id === item.id ? "active" : "", onclick: () => openRun(item.id) },
+      h("div", { class: "top" }, pill, item.blocked ? h("span", { class: "pill warn" }, "⚠") : null,
+        h("span", { class: "time" }, (item.started_at || "").replace("T", " ").slice(5, 16), item.total != null ? ` · ${item.total}s` : "")),
+      h("div", { class: "u" }, u),
+      h("div", { class: "acts" },
+        h("button", { title: "Copy this run's inputs into the form", onclick: e => { e.stopPropagation(); loadInputs(item.id); } }, "Load inputs"),
+        h("button", { title: "Load inputs and run again", onclick: async e => { e.stopPropagation(); await loadInputs(item.id); run(); } }, "Re-run"),
+        h("button", { class: "ghost", title: "Delete run", onclick: e => { e.stopPropagation(); delRun(item.id); } }, "✕")));
+    ul.append(li);
+  }
+}
+async function openRun(id) {
+  try { current = await api(`/api/runs/${id}`); renderResult(); loadHistory(); } catch (e) { toast(e.message); }
+}
+async function loadInputs(id) {
+  try {
+    const { request } = await api(`/api/runs/${id}`);
+    setState(request); toast("Inputs loaded into the form");
+  } catch (e) { toast(e.message); }
+}
+async function delRun(id) {
+  if (!confirm("Delete this run and its files?")) return;
+  try { await api(`/api/runs/${id}`, { method: "DELETE" });
+    if (current?.result?.id === id) { current = null; $("#results").replaceChildren(h("div", { class: "empty" }, "Run deleted.")); }
+    loadHistory();
+  } catch (e) { toast(e.message); }
+}
+
+/* ---------- Init ---------- */
+async function init() {
+  const data = await api("/api/schema");
+  SCHEMA = data.fields; PRESETS = data.presets; PROFILES = data.profiles;
+  renderConfig();
+  PRESETS.forEach((p, i) => $("#preset").append(h("option", { value: i }, p.name)));
+  const saved = store.get();
+  setState(saved || { ...DEFAULTS, ...PRESETS[0] });
+
+  $("#preset").addEventListener("change", e => {
+    if (e.target.value === "") return;
+    setState({ ...DEFAULTS, ...PRESETS[e.target.value] }, { keepConfig: true });
+    e.target.value = ""; toast("Preset loaded");
+  });
+  $("#wait_for").addEventListener("change", syncWaitSelector);
+  $("#form").addEventListener("input", save);
+  $("#form").addEventListener("change", save);
+  $("#addRule").addEventListener("click", () => addRule());
+  $("#runBtn").addEventListener("click", run);
+  $("#previewBtn").addEventListener("click", preview);
+  $("#refreshRuns").addEventListener("click", loadHistory);
+  $("#resetBtn").addEventListener("click", () => { setState({ ...DEFAULTS, ...PRESETS[0] }); toast("Form reset"); });
+  document.addEventListener("keydown", e => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); run(); } });
+
+  const st = await api("/api/status").catch(() => ({}));
+  if (st.running) toast("A run is already in progress on the server");
+  await loadHistory();
+}
+init().catch(e => toast(`Failed to load: ${e.message}`));
+</script>
+</body>
+</html>

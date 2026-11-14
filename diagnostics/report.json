@@ -1,0 +1,104 @@
+{
+    "browser_version": "158.0.1-beta.41",
+    "headless": false,
+    "fingerprint": {
+        "timestamp": "2026-11-03T08:27:48.309Z",
+        "navigator": {
+            "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:158.0) Gecko/20100101 Firefox/158.0",
+            "platform": "MacIntel",
+            "language": "en-US",
+            "languages": [
+                "en-US",
+                "en"
+            ],
+            "hardwareConcurrency": 8,
+            "deviceMemory": null,
+            "webdriver": false,
+            "cookieEnabled": true,
+            "maxTouchPoints": 0,
+            "vendor": "",
+            "pdfViewerEnabled": true
+        },
+        "screen": {
+            "width": 1440,
+            "height": 900,
+            "availWidth": 1440,
+            "availHeight": 824,
+            "colorDepth": 30,
+            "pixelDepth": 30,
+            "devicePixelRatio": 2
+        },
+        "window": {
+            "innerWidth": 1440,
+            "innerHeight": 739,
+            "outerWidth": 1440,
+            "outerHeight": 824,
+            "scrollWidth": 1440,
+            "scrollHeight": 4212
+        },
+        "timezone": {
+            "timezone": "Asia/Kolkata",
+            "locale": "en-IN",
+            "offsetMinutes": -330
+        },
+        "webgl": {
+            "available": true,
+            "webgl2Available": false,
+            "vendor": "Apple",
+            "renderer": "Apple M1, or similar"
+        },
+        "canvas": {
+            "available": true,
+            "dataURLLength": 5434
+        },
+        "features": {
+            "localStorage": true,
+            "sessionStorage": true,
+            "webAssembly": true,
+            "webRTC": true,
+            "serviceWorker": true,
+            "permissions": true,
+            "bluetooth": false
+        },
+        "fonts": {
+            "Arial": true,
+            "Helvetica": true,
+            "Times New Roman": true,
+            "Courier New": true,
+            "Georgia": true,
+            "Verdana": true,
+            "Menlo": true,
+            "Monaco": true
+        }
+    },
+    "page": {
+        "title": "Check browser fingerprinting with Pixelscan \ud83d\udd0eAnalyze your digital trail",
+        "url": "https://pixelscan.net/fingerprint-check",
+        "text": "Products\nResources\nSpecial Offers\nCompany\nFingerprint Check\n\nVerify your browser fingerprint\n\nCHECKERS\nIP Address Check\n\nSee your IP details\n\nIP Blacklist Check\n\nReviewing blacklist agent\n\nBot Verification\n\nVerify that a user is a human\n\nVPN Check\n\nTest and see the expected security\n\nTOOLS\nDNS Leak Test\n\nSecuring your DNS tunnel\n\nWebRTC Leak Test\n\nSecuring your WebRTC tunnel\n\nLocation Info\n\nProvide accurate location\n\nCookie Converter\n\nConvert Cookies into JSON\n\nAPPS\nProxy Checker\n\nVerify proxy quality\n\nAndroid Checker\n\nCheck your Android device\n\nRESOURCES\nPixelscan Blog\n\n400+ useful articles\n\nPixelscan Glossary\n\nThe detection dictionary\n\nGUIDES\nUltimate Antidetect Guide\nProxy Best Practices\nBEST PROXIES\nBest Proxy Providers\nBest Residential Proxies\nBest Mobile Proxies\nBest Telegram Proxies\nBest Chinese Proxies\nRECOMMENDED TOOLS\nBest Anti-Detect Browsers\nBest Cloud Phones Providers\nBest Tools To Avoid IP Ban\nBest Captcha Solvers\nPhone Farming\nPixelscan Partners\n\nGet exclusive discounts from top services\n\nBEST DEALS\n20% OFF Multilogin\n\nLeading multi-account platform\n\n-35% Off NodeMaven\n\nStable and undetectable proxies\n\nCOMPANY INFO\nAbout Pixelscan\nContact Us\nJoin Pixelscan Community\nFingerprint Scan\nRestart\n\nYour Browser Fingerprint is inconsistent\n\nHow to Fix it?\n\nFirefox 158.0 on Mac OS\n\nBrowser\n\nFirefox-11-22,Firefox-114-0\nCheck Geo API\n\nIndia / Borivali\n\nLocation\n\nNo proxy detected\n\nProxy\n\nMasking detected\n\nFingerprint\n\nBest antidetect browsers\n\nNo automated behavior detected\n\nBot check\n\nScroll Down for More Info\nWhat Websites See About You\nFonts\nFont hash\n704a3b579df5da2a59083e89892c240b\nFonts\nAl Bayan\nAl Nile\nAl Tarikh\nAmerican Typewriter\nAndale Mono\nApple Braille\nApple Chancery\n+150 more\nFrequently Asked Questions\nWhat is a browser fingerprint test on Pixelscan?\n\nA browser fingerprint test collects technical details from your browser and device\u2014like screen resolution, OS, timezone, language, and WebGL\u2014to create a unique ID. Websites can use this ID to recognize or track you across sessions, even without cookies or logins.\n\nWhat is canvas fingerprinting on Pixelscan?\n\nCanvas fingerprinting is a tracking method where websites use your browser to draw a hidden image. Since every browser and device renders it slightly differently, the result becomes a unique signature that can identify you. Pixelscan detects these differences to show how identifiable your browser is.\n\nHow does Pixelscan check browser fingerprints?\n\nPixelscan gathers data from dozens of fingerprint signals, including canvas rendering, audio context, fonts, WebGL, and HTTP headers. It analyzes these to show how unique your setup is and whether any traits could leak your identity.\n\nHow can I tell if my fingerprint is consistent across sessions using Pixelscan?\n\nRun the same profile through Pixelscan multiple times without changing settings. If key values like canvas hash, WebGL, and timezone stay the same, your fingerprint is consistent. Even small changes can trigger red flags on websites, so use stable settings and avoid reconfiguring profiles.\n\nWhy do I see incosistent results when I run a browser fingerprint test on Pixelscan?\n\nSmall changes in IP, resolution, timezone, or extensions between sessions can lead to inconsistent fingerprints. These mismatches often trigger CAPTCHAs or bans. For better consistency, keep your browser settings and environment stable across uses. Check out article on how to fix it.\n\nHow can I check connection and network exposure with Pixelscan?\nPixelscan includes these tools to review your connection details:\nIP Check \u2013 Shows your public IP address and geolocation.\nProxy Check \u2013 Detects whether your proxy or VPN hides your real location.\nDNS Leak Test \u2013 Verifies if your DNS requests expose your ISP or true region.\nIP Blacklist Test \u2013 Checks if your IP is listed on spam or security blacklists.\nContact us for collaboration\npartners@pixelscan.net\nCheckers\nFingerprint\nIP Check\nIP Blacklist Check\nBot Checker\nVPN Check\nTools\nDNS Leak Test\nWebRTC Leak Test\nLocation\nCookie Converter\nPixelscan\nBlog\nPartners\nAbout Pixelscan\nTelegram Community\nBest proxies\nBest Proxy Providers\nBest Residential Proxies\nBest Mobile Proxies\nBest Telegram Proxies\nBest Chinese Proxies\nProxies by Location\nBest Asia Proxies\nBest India Proxies\nBest Brazil Proxies\nBest Chinese Proxies\nBest German Proxies\nBest Japan Proxies\nBest Czech Proxies\nBest Tools\nBest Antidetect Browsers\nBest Cloud Phones Providers\nBest Tools To Avoid IP Ban\nBest Captcha Solvers\nPhone Farming\n\u00a9 2026 Pixelscan.net. All rights reserved.\nPrivacy Policy"
+    },
+    "navigation_requests": [
+        {
+            "url": "https://pixelscan.net/fingerprint-check",
+            "method": "GET",
+            "headers": {
+                "host": "pixelscan.net",
+                "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:158.0) Gecko/20100101 Firefox/158.0",
+                "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "accept-language": "en-US,en;q=0.9",
+                "accept-encoding": "gzip, deflate, br, zstd",
+                "connection": "keep-alive",
+                "upgrade-insecure-requests": "1",
+                "sec-fetch-dest": "document",
+                "sec-fetch-mode": "navigate",
+                "sec-fetch-site": "none",
+                "sec-fetch-user": "?1"
+            }
+        }
+    ],
+    "document_responses": [
+        {
+            "url": "https://pixelscan.net/fingerprint-check",
+            "status": 200
+        }
+    ]
+}

@@ -7,8 +7,10 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.by import By
 
 MAX_PAGES = 5
-DELAY = 2
-WEB_PAGE = "https://books.toscrape.co"
+DELAY = 3
+# WEB_PAGE = "https://books.toscrape.co"
+# WEB_PAGE = "https://www.siddheshsawant.in/"
+WEB_PAGE = "https://www.reddit.com/"
 DB_NAME = "scrape.db"
 
 def init_db(database):
