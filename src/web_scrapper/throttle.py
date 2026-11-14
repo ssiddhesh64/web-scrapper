@@ -9,6 +9,8 @@ Rules (all per site, except the session budget and breaks):
 - Gap between page loads: log-normal between min_interval and max_interval.
 - Every ~break_every pages: a longer break (break_seconds).
 - After max_pages_per_session: SessionBudgetExceeded. Start a fresh session later.
+- After max_pages_per_day for a site (counted across runs in a BudgetStore, e.g. SqliteStore):
+  DailyBudgetExceeded. Without a store there is no daily limit (nothing to count across runs).
 - 429 / 5xx: cool-down of cooldown_base, doubling on each repeat, capped at cooldown_max.
 - 403 / captcha: the site is stopped for this session (stop_on_hard_block), so DomainBlocked.
 - max_consecutive_failures non-OK results in a row: the site is stopped (circuit breaker).
@@ -16,10 +18,13 @@ Rules (all per site, except the session budget and breaks):
 """
 
 import asyncio
+import ipaddress
 import random
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import date
+from typing import Protocol
 from urllib.parse import urlparse
 
 from .config import ThrottleConfig
@@ -38,6 +43,17 @@ class SessionBudgetExceeded(ThrottleStop):
     pass
 
 
+class DailyBudgetExceeded(ThrottleStop):
+    pass
+
+
+class BudgetStore(Protocol):
+    """Persists pages per (day, site) across runs. SqliteStore implements it."""
+
+    def pages_on(self, day: str, site: str) -> int: ...
+    def add_pages(self, day: str, site: str, n: int = 1) -> None: ...
+
+
 class DomainBlocked(ThrottleStop):
     def __init__(self, domain: str, reason: str):
         super().__init__(f"{domain}: {reason}")
@@ -51,6 +67,11 @@ def site_key(url: str) -> str:
     Naive (last two labels), so it's wrong for e.g. example.co.uk. Good enough for our targets.
     """
     host = (urlparse(url).hostname or "").lower()
+    try:
+        ipaddress.ip_address(host)
+        return host  # an IP address is its own site (never "0.1" for 127.0.0.1)
+    except ValueError:
+        pass
     parts = host.split(".")
     return ".".join(parts[-2:]) if len(parts) >= 2 else host
 
@@ -73,9 +94,12 @@ class Throttle:
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         rng: random.Random = random,
+        budget_store: BudgetStore | None = None,
+        today: Callable[[], str] = lambda: date.today().isoformat(),
     ):
         self.cfg = cfg
         self._clock, self._sleep, self._rng = clock, sleep, rng
+        self.budget_store, self._today = budget_store, today
         self._sites: dict[str, _Site] = {}
         self.pages = 0
         self._next_break_at = randint_between(cfg.break_every, rng)
@@ -94,6 +118,12 @@ class Throttle:
         key, site = self._site(url)
         if site.stopped:
             raise DomainBlocked(key, site.stopped)
+        if self.budget_store is not None:
+            used = self.budget_store.pages_on(self._today(), key)
+            if used >= self.cfg.max_pages_per_day:
+                raise DailyBudgetExceeded(
+                    f"{key}: daily budget of {self.cfg.max_pages_per_day} pages used ({used} today)"
+                )
 
         async with site.lock:  # concurrent callers for one site queue up here
             now = self._clock()
@@ -111,6 +141,8 @@ class Throttle:
             gap = lognormal_between(self.cfg.min_interval, self.cfg.max_interval, self._rng)
             site.next_allowed = self._clock() + gap
             self.pages += 1
+            if self.budget_store is not None:
+                self.budget_store.add_pages(self._today(), key)
         return delay
 
     def record(self, url: str, block: BlockKind) -> None:

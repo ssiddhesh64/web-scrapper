@@ -104,6 +104,7 @@ class ThrottleConfig:
     min_interval: float = 4.0  # gap between page loads on the same site...
     max_interval: float = 10.0  # ...drawn between these (log-normal, not uniform)
     max_pages_per_session: int = 60  # then stop: start a fresh session later
+    max_pages_per_day: int = 400  # per site, across runs (needs a budget store, e.g. SqliteStore)
     break_every: tuple[int, int] = (15, 30)  # take a longer break every N pages...
     break_seconds: tuple[float, float] = (30.0, 120.0)  # ...lasting this long
     cooldown_base: float = 60.0  # after a 429/5xx: wait this, doubling per repeat...
@@ -114,8 +115,13 @@ class ThrottleConfig:
     def __post_init__(self):
         if not 0 <= self.min_interval <= self.max_interval:
             raise ValueError("need 0 <= min_interval <= max_interval")
-        if self.max_pages_per_session < 1 or self.max_consecutive_failures < 1:
-            raise ValueError("max_pages_per_session and max_consecutive_failures must be >= 1")
+        if (
+            min(self.max_pages_per_session, self.max_pages_per_day, self.max_consecutive_failures)
+            < 1
+        ):
+            raise ValueError(
+                "max_pages_per_session, max_pages_per_day and max_consecutive_failures must be >= 1"
+            )
         for name in ("break_every", "break_seconds"):
             lo, hi = getattr(self, name)
             if lo < 0 or hi < lo:
